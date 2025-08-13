@@ -69,6 +69,20 @@ class ModelSettings(BaseModel):
         description="OpenAI SAS Authentication Method",
     )
 
+    @model_validator(mode="after")
+    def _validate_auth_requires_api_key(self) -> "ModelSettings":
+        from ingenious.common.enums import AuthenticationMethod
+
+        if (
+            self.authentication_method == AuthenticationMethod.TOKEN
+            and not self.api_key
+        ):
+            raise ValueError(
+                "API key is required when authentication_method is 'token'. "
+                "Set AZURE_OPENAI_API_KEY (or the appropriate key) or supply a value."
+            )
+        return self
+
     @field_validator("api_key")
     @classmethod
     def validate_api_key(cls, v: str, info: ValidationInfo) -> str:
@@ -195,6 +209,19 @@ class AzureSearchSettings(BaseModel):
     service: str = Field("", description="Azure Search service name")
     endpoint: str = Field("", description="Azure Search service endpoint URL")
     key: str = Field("", description="Azure Search service API key")
+    index_name: str = Field("", description="Azure Search index name (required)")
+    semantic_configuration_name: str | None = Field(
+        "default", description="Semantic configuration name for L2 re-ranking"
+    )
+    # Optional knobs
+    use_semantic_ranking: bool = Field(
+        True, description="Enable L2 semantic re-ranking"
+    )
+    top_k_retrieval: int = Field(20, description="K for lexical/vector retrieval")
+    top_n_final: int = Field(5, description="N final chunks for RAG")
+    id_field: str = Field("id", description="Index id field")
+    content_field: str = Field("content", description="Index content field")
+    vector_field: str = Field("vector", description="Index vector field")
 
 
 class AzureSqlSettings(BaseModel):

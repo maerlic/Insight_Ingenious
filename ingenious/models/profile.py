@@ -11,7 +11,6 @@ class ModelConfig(BaseModel):
     base_url: str
     deployment: str = ""
     api_version: str = ""
-    deployment: str = ""
     client_id: str = ""
     client_secret: str = ""
     tenant_id: str = ""

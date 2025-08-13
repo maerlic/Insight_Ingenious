@@ -1,3 +1,4 @@
+# Insight_Ingenious/ingenious/cli/server_commands.py
 """
 Server-related CLI commands for Insight Ingenious.
 
@@ -20,6 +21,7 @@ from rich.console import Console
 from typing_extensions import Annotated
 
 from ingenious.cli.utilities import CliFunctions
+from ingenious.config import get_config
 from ingenious.core.structured_logging import get_logger
 
 # Load environment variables from .env file
@@ -27,6 +29,13 @@ load_dotenv()
 
 # Initialize logger
 logger = get_logger(__name__)
+
+
+def make_app(config):
+    # keep the import late so your env var ordering still works
+    from ingenious.main import create_app
+
+    return create_app(config)
 
 
 def register_commands(app: typer.Typer, console: Console) -> None:
@@ -202,11 +211,8 @@ def register_commands(app: typer.Typer, console: Console) -> None:
             # Ensure INGENIOUS_PROFILE_PATH is not set to avoid legacy loading
             if "INGENIOUS_PROFILE_PATH" in os.environ:
                 del os.environ["INGENIOUS_PROFILE_PATH"]
-        import ingenious.config.config as ingen_config
 
-        config = ingen_config.get_config()
-
-        # Note: prompt tuner functionality has been removed
+        config = get_config()
 
         # Override host and port from CLI parameters only if they differ from defaults
         config.web_configuration.ip_address = host
@@ -220,7 +226,6 @@ def register_commands(app: typer.Typer, console: Console) -> None:
 
         # We need to clean this up and probably separate overall system config from fast api, eg. set the config here in cli and then pass it to FastAgentAPI
         # As soon as we import FastAgentAPI, config will be loaded hence to ensure that the environment variables above are loaded first we need to import FastAgentAPI after setting the environment variables
-        from ingenious.main import FastAgentAPI
 
         os.environ["LOADENV"] = "False"
         console.print(
@@ -267,12 +272,7 @@ def register_commands(app: typer.Typer, console: Console) -> None:
             "ingenious.services.chat_services.multi_agent.conversation_flows"
         )
 
-        fast_agent_api = FastAgentAPI(config)
-
-        # Access the FastAPI app instance
-        app = fast_agent_api.app
-
-        # change directory to project dir
+        app = make_app(config)
         uvicorn.run(
             app,
             host=config.web_configuration.ip_address,

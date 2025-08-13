@@ -1,18 +1,24 @@
-# Insight_Ingenious/ingenious/services/azure_search/__init__.py
+# ingenious/services/azure_search/__init__.py
 
-# Expose only the primary public symbols for the service facade
+from typing import TYPE_CHECKING, Any
 
-# We use explicit imports (relative or absolute depending on package installation status)
-try:
-    from ingenious.services.azure_search.config import SearchConfig
-    from ingenious.services.azure_search.pipeline import build_search_pipeline, AdvancedSearchPipeline
-except ImportError:
-    from .config import SearchConfig
-    from .pipeline import build_search_pipeline, AdvancedSearchPipeline
+# Export the light model directly – safe to import anytime
+from .config import SearchConfig  # noqa: F401
 
 
-__all__ = [
-    "SearchConfig", 
-    "build_search_pipeline",
-    "AdvancedSearchPipeline" # Included for type hinting in consuming services
-]
+# Add type hints to the function signature
+def build_search_pipeline(*args: Any, **kwargs: Any) -> "AdvancedSearchPipeline":
+    """
+    Lazy proxy so importing this package does NOT pull Azure SDKs.
+    The real import happens only when the function is actually called.
+    """
+    from .components.pipeline import build_search_pipeline as _impl
+
+    return _impl(*args, **kwargs)
+
+
+if TYPE_CHECKING:
+    # Only for type checkers; doesn't run at runtime
+    from .components.pipeline import AdvancedSearchPipeline  # noqa: F401
+
+__all__ = ["SearchConfig", "build_search_pipeline", "AdvancedSearchPipeline"]

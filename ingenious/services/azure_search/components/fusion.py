@@ -2,8 +2,7 @@
 
 import logging
 import re
-from typing import List, Dict, Any, Tuple
-from openai import AsyncAzureOpenAI
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from ingenious.services.azure_search.config import SearchConfig
@@ -11,6 +10,7 @@ except ImportError:
     from ..config import SearchConfig
 
 logger = logging.getLogger(__name__)
+
 
 class DynamicRankFuser:
     """
@@ -20,212 +20,310 @@ class DynamicRankFuser:
     Alpha (α) represents the weight assigned to Dense (Vector) retrieval. (1-α) is assigned to Sparse (BM25) retrieval.
     """
 
-    def __init__(self, config: SearchConfig):
+    def __init__(self, config: SearchConfig, llm_client: Optional[Any] = None):
         self._config = config
-        self._llm_client = self._initialize_llm_client()
+        if llm_client is None:
+            from ..client_init import make_async_openai_client
 
-    def _initialize_llm_client(self) -> AsyncAzureOpenAI:
-        """Initializes the asynchronous Azure OpenAI client for generation (DAT)."""
-        return AsyncAzureOpenAI(
-            azure_endpoint=self._config.openai_endpoint,
-            api_key=self._config.openai_key.get_secret_value(),
-            api_version=self._config.openai_version,
-        )
+            self._llm_client = make_async_openai_client(config)
+        else:
+            self._llm_client = llm_client
 
-    async def _perform_dat(self, query: str, top_lexical: Dict[str, Any], top_vector: Dict[str, Any]) -> float:
+    async def _perform_dat(
+        self, query: str, top_lexical: Dict[str, Any], top_vector: Dict[str, Any]
+    ) -> float:
         """
         Executes the Dynamic Alpha Tuning (DAT) step using the LLM.
         Returns the calculated alpha (α), the weight for Dense (Vector) retrieval.
         """
         logger.info("Starting Dynamic Alpha Tuning (DAT) weight calculation...")
 
-        # Prepare the user prompt with the specific documents (truncated for efficiency)
-        # Aligning with the input format specified in the DAT prompt
         prompt = f"""
 Question: {query}
 
 --- Dense Retrieval Top-1 Result ---
-{top_vector.get(self._config.content_field, '')[:1500]}
+{top_vector.get(self._config.content_field, "")[:1500]}
 
 --- BM25 Retrieval Top-1 Result ---
-{top_lexical.get(self._config.content_field, '')[:1500]}
+{top_lexical.get(self._config.content_field, "")[:1500]}
 """
         try:
-            # Execute the LLM call, expecting plain text output (two space-separated integers)
             response = await self._llm_client.chat.completions.create(
                 model=self._config.generation_deployment_name,
                 messages=[
                     {"role": "system", "content": self._config.dat_prompt},
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.0, # Deterministic scoring
-                max_tokens=10, # Only need 2 digits and a space
+                temperature=0.0,
+                max_tokens=10,
             )
 
-            llm_output = response.choices[0].message.content.strip()
-            
-            # Parse the scores robustly
+            llm_output = (response.choices[0].message.content or "").strip()
             score_vector, score_lexical = self._parse_dat_scores(llm_output)
-
-            # Calculate Alpha (α) using the case-aware formulation (Hsu & Tzeng, 2025, Section 4.2)
             alpha = self._calculate_alpha(score_vector, score_lexical)
-            
-            logger.info(f"DAT Scores: Vector(Sv)={score_vector}, Lexical(Sb)={score_lexical}. Calculated Alpha (α)={alpha:.1f}")
+            logger.info(
+                f"DAT Scores: Vector(Sv)={score_vector}, Lexical(Sb)={score_lexical}. Calculated Alpha (α)={alpha:.1f}"
+            )
             return alpha
 
         except Exception as e:
-            logger.error(f"Error during DAT execution (e.g., API error or parsing failure): {e}. Falling back to equal weight (0.5).")
+            logger.error(
+                f"Error during DAT execution (e.g., API error or parsing failure): {e}. Falling back to equal weight (0.5)."
+            )
             return 0.5
 
     def _parse_dat_scores(self, llm_output: str) -> Tuple[int, int]:
-        """Parses the LLM output string "ScoreV ScoreL" into integers robustly."""
-        # Use regex to find the first two numbers in the output
-        match = re.search(r'(\d+)\s+(\d+)', llm_output)
-        if match:
+        nums = re.findall(r"-?\d+", llm_output or "")
+        if len(nums) >= 2:
             try:
-                score_v = int(match.group(1))
-                score_l = int(match.group(2))
-                # Ensure scores are within the expected 0-5 range
+                score_v, score_l = int(nums[0]), int(nums[1])
                 if 0 <= score_v <= 5 and 0 <= score_l <= 5:
                     return score_v, score_l
                 else:
-                    logger.warning(f"DAT scores out of range (0-5): '{llm_output}'. Falling back to (0, 0).")
+                    logger.warning(
+                        f"DAT scores out of range (0-5): '{llm_output}'. Falling back to (0, 0)."
+                    )
             except ValueError:
-                # Handle cases where match groups might not be valid integers (though regex \d+ should prevent this)
                 pass
-        
-        logger.warning(f"Failed to parse DAT scores from LLM output: '{llm_output}'. Falling back to (0, 0).")
+        logger.warning(
+            f"Failed to parse DAT scores from LLM output: '{llm_output}'. Falling back to (0, 0)."
+        )
         return 0, 0
 
     def _calculate_alpha(self, score_vector: int, score_lexical: int) -> float:
         """Implements the specific case-aware logic for calculating alpha (α) as defined in the DAT paper (Eq. 6)."""
-        
-        # Case 1: Both methods fail (0, 0)
         if score_vector == 0 and score_lexical == 0:
             alpha = 0.5
-        # Case 2: Vector is a direct hit (5) and Lexical is not
         elif score_vector == 5 and score_lexical != 5:
             alpha = 1.0
-        # Case 3: Lexical is a direct hit (5) and Vector is not
         elif score_lexical == 5 and score_vector != 5:
             alpha = 0.0
-        # Case 4: Proportional weighting
         else:
-            # Since we handled the 0/0 case, the denominator here is guaranteed to be > 0
-            alpha = score_vector / (score_vector + score_lexical)
+            denom = score_vector + score_lexical
+            # denom > 0 unless both are zero (handled above)
+            alpha = (score_vector / denom) if denom > 0 else 0.5
 
-        # The paper specifies rounding the final alpha to one decimal place for stability (Section 4.2).
         return round(alpha, 1)
 
     def _normalize_scores(self, results: List[Dict[str, Any]]) -> None:
         """
-        Performs Min-Max normalization on the retrieval scores in place (Section 3).
-        Normalization is essential because BM25 and Vector scores are on different scales.
+        Per-method Min-Max normalization (Section 3).
+        Degenerate case (max == min): assign constant 0.5 to all.
         """
         if not results:
             return
 
-        # Ensure scores are treated as floats and handle potential None values
-        scores = []
+        raw_scores: List[float] = []
         for r in results:
-            score = r.get("_retrieval_score")
-            if score is not None:
-                try:
-                    scores.append(float(score))
-                except (ValueError, TypeError):
-                    scores.append(0.0)
-            else:
-                scores.append(0.0)
+            s = r.get("_retrieval_score")
+            try:
+                raw_scores.append(float(s) if s is not None else 0.0)
+            except (ValueError, TypeError):
+                raw_scores.append(0.0)
 
-        if not scores:
+        if not raw_scores:
             return
 
-        min_score = min(scores)
-        max_score = max(scores)
+        min_score = min(raw_scores)
+        max_score = max(raw_scores)
 
         if max_score == min_score:
-            # Handle division by zero if all scores are the same
-            normalized_value = 1.0 if max_score > 0 else 0.0
-            for result in results:
-                result["_normalized_score"] = normalized_value
-        else:
-            for i, result in enumerate(results):
-                normalized_score = (scores[i] - min_score) / (max_score - min_score)
-                result["_normalized_score"] = normalized_score
+            # Spec-compliant degenerate handling: constant mid-scale value
+            for r in results:
+                r["_normalized_score"] = 0.5
+            return
 
-    async def fuse(self, query: str, lexical_results: List[Dict[str, Any]], vector_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        span = max_score - min_score
+        for i, r in enumerate(results):
+            v = (raw_scores[i] - min_score) / span
+            # Clamp to [0,1] for safety
+            v = 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)
+            r["_normalized_score"] = v
+
+    async def fuse(
+        self,
+        query: str,
+        lexical_results: List[Dict[str, Any]],
+        vector_results: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
         """
-        Fuses the lexical and vector results using Dynamic Alpha Tuning.
-        R(q, d) = α(q) · S_dense_norm + (1 - α(q)) · S_BM25_norm
+        Fuses lexical and vector results using Dynamic Alpha Tuning (DAT).
+        R(q, d) = α(q) · S_dense_norm + (1 − α(q)) · S_BM25_norm
         """
-        
-        # Handle edge cases where one or both lists might be empty
+        # ─────────────────────────────
+        # 0) Fast exits
+        # ─────────────────────────────
         if not lexical_results and not vector_results:
             return []
-        # If one list is empty, DAT is unnecessary; return the non-empty list.
-        # Note: We don't normalize here as it's unnecessary for ranking if only one list exists.
-        if not lexical_results:
-            logger.info("Lexical results empty. Proceeding with vector results only (α=1.0).")
-            for r in vector_results: r["_fused_score"] = r.get("_retrieval_score", 0.0)
-            return vector_results
-        if not vector_results:
-            logger.info("Vector results empty. Proceeding with lexical results only (α=0.0).")
-            for r in lexical_results: r["_fused_score"] = r.get("_retrieval_score", 0.0)
-            return lexical_results
 
-        # 1. Determine weights using DAT on top results
-        top_lexical = lexical_results[0]
-        top_vector = vector_results[0]
-        
-        # Get the dynamic alpha (weight for vector/dense)
-        alpha = await self._perform_dat(query, top_lexical, top_vector)
+        # ─────────────────────────────
+        # 1) Compute α
+        #    - Use DAT only if both sides have a Top-1
+        #    - Otherwise use consistent defaults:
+        #        * only vector → α = 1.0
+        #        * only lexical → α = 0.0
+        # ─────────────────────────────
+        if lexical_results and vector_results:
+            qkey = (query or "").strip().lower()
+            if not hasattr(self, "_alpha_cache"):
+                self._alpha_cache: Dict[str, float] = {}
+            if qkey in self._alpha_cache:
+                alpha = self._alpha_cache[qkey]
+            else:
+                alpha = await self._perform_dat(
+                    query, lexical_results[0], vector_results[0]
+                )
+                self._alpha_cache[qkey] = alpha
+        elif vector_results and not lexical_results:
+            alpha = 1.0
+        else:  # lexical_results and not vector_results
+            alpha = 0.0
+
         one_minus_alpha = round(1.0 - alpha, 1)
 
-        # 2. Normalize scores within each list
+        # ─────────────────────────────
+        # 2) Per-method Min-Max normalization (no rank fallback)
+        # ─────────────────────────────
         self._normalize_scores(lexical_results)
         self._normalize_scores(vector_results)
 
-        # 3. Compute combined score (Convex Combination) and merge results
-        fused_results: Dict[str, Dict[str, Any]] = {}
         id_field = self._config.id_field
+        diag = bool(getattr(self._config, "expose_retrieval_diagnostics", False))
 
-        # Process lexical results (Weight = 1 - α)
+        def _safe_float(x: Any) -> float:
+            try:
+                return float(x)
+            except Exception:
+                return 0.0
+
+        # Build normalized lookups
+        lex_norm_lookup: Dict[str, float] = {
+            doc_id: _safe_float(r.get("_normalized_score"))
+            for r in lexical_results
+            if (doc_id := r.get(id_field)) is not None
+        }
+        vec_norm_lookup: Dict[str, float] = {
+            doc_id: _safe_float(r.get("_normalized_score"))
+            for r in vector_results
+            if (doc_id := r.get(id_field)) is not None
+        }
+
+        # Raw lookups for diagnostics
+        lex_raw_lookup = {
+            r.get(id_field): r.get("_retrieval_score")
+            for r in lexical_results
+            if r.get(id_field)
+        }
+        vec_raw_lookup = {
+            r.get(id_field): r.get("_retrieval_score")
+            for r in vector_results
+            if r.get(id_field)
+        }
+
+        # ─────────────────────────────
+        # 3) Convex combination (core DAT)
+        # ─────────────────────────────
+        fused_results: Dict[str, Dict[str, Any]] = {}
+
+        # Process lexical side first: (1 − α) · S_BM25_norm
         for result in lexical_results:
             doc_id = result.get(id_field)
-            if doc_id:
-                # Fused Score component = (1 - α) * normalized_lexical_score
-                fused_score_component = one_minus_alpha * result.get("_normalized_score", 0.0)
-                result["_fused_score"] = fused_score_component
-                fused_results[doc_id] = result
+            if not doc_id:
+                continue
 
-        # Process vector results (Weight = α)
+            bm25_norm = lex_norm_lookup.get(doc_id, 0.0)
+            vec_norm = vec_norm_lookup.get(doc_id, 0.0)
+
+            bm25_component = one_minus_alpha * bm25_norm
+            vector_component = alpha * vec_norm
+
+            fused = bm25_component + vector_component
+            result["_fused_score"] = fused
+
+            # Preserve raw scores for display
+            result["_bm25_score_raw"] = lex_raw_lookup.get(doc_id)
+            result["_vector_score_raw"] = vec_raw_lookup.get(doc_id)  # may be None
+
+            if diag:
+                result["_dat_alpha"] = alpha
+                result["_dat_weight_vector"] = alpha
+                result["_dat_weight_bm25"] = one_minus_alpha
+                result["_bm25_norm"] = bm25_norm
+                result["_vector_norm"] = vec_norm
+                result["_bm25_component"] = bm25_component
+                result["_vector_component"] = vector_component
+
+            fused_results[doc_id] = result
+
+        # Process vector side: α · S_dense_norm (and add if missing or merge if overlap)
         for result in vector_results:
             doc_id = result.get(id_field)
-            if doc_id:
-                # Fused Score component = α * normalized_vector_score
-                vector_score_component = alpha * result.get("_normalized_score", 0.0)
-                
-                if doc_id in fused_results:
-                    # If the document exists in both lists, combine the components
-                    # Total Fused Score = (α * norm_vec) + ((1-α) * norm_lex)
-                    existing_result = fused_results[doc_id]
-                    existing_result["_fused_score"] += vector_score_component
-                    # Update retrieval type metadata to reflect the dynamic alpha used
-                    existing_result["_retrieval_type"] = f"hybrid_dat_alpha_{alpha:.1f}"
-                else:
-                    result["_fused_score"] = vector_score_component
-                    fused_results[doc_id] = result
+            if not doc_id:
+                continue
 
-        # 4. Sort the final list based on the fused score
-        sorted_fused_results = sorted(
-            fused_results.values(),
-            key=lambda x: x.get("_fused_score", 0.0),
-            reverse=True
-        )
+            vec_norm = vec_norm_lookup.get(doc_id, 0.0)
+            bm25_norm = lex_norm_lookup.get(doc_id, 0.0)
 
-        logger.info(f"DAT Fusion complete. Total unique documents: {len(sorted_fused_results)}")
-        return sorted_fused_results
+            bm25_component = one_minus_alpha * bm25_norm
+            vector_component = alpha * vec_norm
+            fused = bm25_component + vector_component
 
-    async def close(self):
+            if doc_id in fused_results:
+                existing = fused_results[doc_id]
+                existing["_fused_score"] = fused  # recompute with both components
+
+                # update raw scores for overlap docs
+                existing["_vector_score_raw"] = vec_raw_lookup.get(doc_id)
+
+                if diag:
+                    existing["_bm25_norm"] = bm25_norm
+                    existing["_vector_norm"] = vec_norm
+                    existing["_bm25_component"] = bm25_component
+                    existing["_vector_component"] = vector_component
+
+                existing["_retrieval_type"] = f"hybrid_dat_alpha_{alpha:.1f}"
+            else:
+                result["_fused_score"] = fused
+
+                # Preserve raw scores for display
+                result["_bm25_score_raw"] = lex_raw_lookup.get(doc_id)  # may be None
+                result["_vector_score_raw"] = vec_raw_lookup.get(doc_id)
+
+                if diag:
+                    result["_dat_alpha"] = alpha
+                    result["_dat_weight_vector"] = alpha
+                    result["_dat_weight_bm25"] = one_minus_alpha
+                    result["_bm25_norm"] = bm25_norm
+                    result["_vector_norm"] = vec_norm
+                    result["_bm25_component"] = bm25_component
+                    result["_vector_component"] = vector_component
+
+                fused_results[doc_id] = result
+
+        # ─────────────────────────────
+        # 4) Stable sort + tiebreakers
+        # ─────────────────────────────
+        overlap_ids = set(lex_norm_lookup.keys()) & set(vec_norm_lookup.keys())
+
+        def _sort_key(x: Dict[str, Any]) -> Tuple[float, int, float, str]:
+            doc_id = x.get(id_field) or ""
+            fused = _safe_float(x.get("_fused_score"))
+            overlap = 1 if doc_id in overlap_ids else 0
+            max_single = max(
+                lex_norm_lookup.get(doc_id, 0.0), vec_norm_lookup.get(doc_id, 0.0)
+            )
+            return (fused, overlap, max_single, str(doc_id))
+
+        sorted_fused = sorted(fused_results.values(), key=_sort_key, reverse=True)
+
+        # Set _final_score only if absent (do not trample later stages)
+        for r in sorted_fused:
+            if r.get("_final_score") is None:
+                r["_final_score"] = r.get("_fused_score", 0.0)
+
+        logger.info("DAT Fusion complete. docs=%d alpha=%.1f", len(sorted_fused), alpha)
+        return sorted_fused
+
+    async def close(self) -> None:
         """Closes the underlying LLM client."""
         await self._llm_client.close()

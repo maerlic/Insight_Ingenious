@@ -16,26 +16,61 @@ from azure.core.credentials import AzureKeyCredential
 from azure.search.documents import SearchClient
 from azure.search.documents.indexes import SearchIndexClient
 from azure.search.documents.indexes.models import (
+    HnswVectorSearchAlgorithmConfiguration,
     SearchableField,
+    SearchField,
     SearchIndex,
     SemanticConfiguration,
     SemanticField,
     SemanticPrioritizedFields,
     SemanticSearch,
     SimpleField,
+    VectorSearch,
+    VectorSearchProfile,
 )
 from dotenv import load_dotenv
+
+# Allow reading IngeniousSettings as source of truth
+try:
+    from ingenious.config import get_config
+except Exception:
+    get_config = None
 
 # Load environment variables
 load_dotenv()
 
 # Azure Search configuration
+# Back-compat & clarity:
+#   Precedence for config values is:
+#     1) Explicit AZURE_AI_* environment variables (if set)
+#     2) Ingenious settings via ingenious.config.get_config() (first service)
+#     3) Hard-coded default for index_name: "ingenious-kb-index"
+#
+# Note: We intentionally do NOT inline a default for AZURE_AI_SEARCH_INDEX_NAME here
+# so that step (2) can supply it before we fall back to the hard-coded default later.
 service_endpoint = os.getenv("AZURE_AI_SEARCH_ENDPOINT")
 key = os.getenv("AZURE_AI_SEARCH_KEY")
-index_name = os.getenv("AZURE_AI_SEARCH_INDEX_NAME", "ingenious-kb-index")
+index_name = os.getenv("AZURE_AI_SEARCH_INDEX_NAME")
+
+if (not service_endpoint or not key or not index_name) and get_config is not None:
+    try:
+        settings = get_config()
+        if settings.azure_search_services and len(settings.azure_search_services) > 0:
+            svc = settings.azure_search_services[0]
+            service_endpoint = service_endpoint or getattr(svc, "endpoint", "")
+            key = key or getattr(svc, "key", "")
+            index_name = index_name or getattr(svc, "index_name", "")
+    except Exception:
+        # Swallow and proceed to defaulting below to keep behavior predictable
+        pass
+
+# Final default for index name if neither env nor settings provided it.
+index_name = index_name or "ingenious-kb-index"
 
 if not service_endpoint or not key:
-    print("Error: AZURE_AI_SEARCH_ENDPOINT and AZURE_AI_SEARCH_KEY must be set in .env")
+    print(
+        "Error: Missing Azure Search endpoint/key. Set AZURE_AI_SEARCH_* or INGENIOUS_AZURE_SEARCH_SERVICES__0__* in .env"
+    )
     sys.exit(1)
 
 # Create clients
@@ -57,6 +92,14 @@ def create_index() -> None:
             name="category", type="Edm.String", filterable=True, facetable=True
         ),
         SimpleField(name="metadata", type="Edm.String"),
+        # Vector field used by the pipeline (defaults: name='vector', dims=1536)
+        SearchField(
+            name="vector",
+            type="Collection(Edm.Single)",
+            searchable=True,
+            vector_search_dimensions=1536,
+            vector_search_profile_name="default",
+        ),
     ]
 
     # Configure semantic search
@@ -68,11 +111,20 @@ def create_index() -> None:
         ),
     )
 
+    # Configure vector search (HNSW) and profile
+    vector_search = VectorSearch(
+        algorithms=[HnswVectorSearchAlgorithmConfiguration(name="hnsw")],
+        profiles=[
+            VectorSearchProfile(name="default", algorithm_configuration_name="hnsw")
+        ],
+    )
+
     # Create the search index
     index = SearchIndex(
         name=index_name,
         fields=fields,
         semantic_search=SemanticSearch(configurations=[semantic_config]),
+        vector_search=vector_search,
     )
 
     try:

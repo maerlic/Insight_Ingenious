@@ -1,8 +1,7 @@
 # Insight_Ingenious/ingenious/services/azure_search/components/generation.py
 
 import logging
-from typing import List, Dict, Any
-from openai import AsyncAzureOpenAI
+from typing import Any, Dict, List, Optional
 
 try:
     from ingenious.services.azure_search.config import SearchConfig
@@ -28,24 +27,22 @@ Context (Source Chunks):
 {context}
 """
 
+
 class AnswerGenerator:
     """
     Generates the final synthesized answer using a Retrieval-Augmented Generation (RAG) approach
     with Azure OpenAI Service.
     """
 
-    def __init__(self, config: SearchConfig):
+    def __init__(self, config: SearchConfig, llm_client: Optional[Any] = None) -> None:
         self._config = config
-        self._llm_client = self._initialize_llm_client()
         self.rag_prompt_template = DEFAULT_RAG_PROMPT
+        if llm_client is None:
+            from ..client_init import make_async_openai_client
 
-    def _initialize_llm_client(self) -> AsyncAzureOpenAI:
-        """Initializes the asynchronous Azure OpenAI client for generation."""
-        return AsyncAzureOpenAI(
-            azure_endpoint=self._config.openai_endpoint,
-            api_key=self._config.openai_key.get_secret_value(),
-            api_version=self._config.openai_version,
-        )
+            self._llm_client = make_async_openai_client(config)
+        else:
+            self._llm_client = llm_client
 
     def _format_context(self, context_chunks: List[Dict[str, Any]]) -> str:
         """Formats the retrieved chunks into a string suitable for the RAG prompt."""
@@ -53,10 +50,10 @@ class AnswerGenerator:
         for i, chunk in enumerate(context_chunks):
             content = chunk.get(self._config.content_field, "N/A")
             # Use a simple numbering scheme for citation
-            metadata = f"[Source {i+1}]"
-            
+            metadata = f"[Source {i + 1}]"
+
             context_parts.append(f"{metadata}\n{content}\n")
-        
+
         return "\n---\n".join(context_parts)
 
     async def generate(self, query: str, context_chunks: List[Dict[str, Any]]) -> str:
@@ -80,11 +77,16 @@ class AnswerGenerator:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"Question: {query}"},
                 ],
-                temperature=0.1, # Low temperature for factual adherence
+                temperature=0.1,  # Low temperature for factual adherence
                 max_tokens=1500,
             )
 
-            answer = response.choices[0].message.content.strip()
+            message_content = response.choices[0].message.content
+            if message_content is None:
+                logger.warning("Received None content from Azure OpenAI response")
+                return "The model did not generate a response."
+
+            answer = message_content.strip()
             logger.info("Answer generation complete.")
             return answer
 
@@ -92,6 +94,6 @@ class AnswerGenerator:
             logger.error(f"Error during answer generation with Azure OpenAI: {e}")
             return "An error occurred while generating the answer."
 
-    async def close(self):
+    async def close(self) -> None:
         """Closes the underlying LLM client."""
         await self._llm_client.close()

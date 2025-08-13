@@ -1,7 +1,6 @@
-# Insight_Ingenious/ingenious/services/azure_search/config.py
+from typing import Optional
 
 from pydantic import BaseModel, Field, SecretStr
-from typing import Optional
 
 # Default prompt for Dynamic Alpha Tuning (DAT)
 # Adapted from the methodology described in "DAT: Dynamic Alpha Tuning for Hybrid Retrieval in RAG" (Hsu & Tzeng, 2025), specifically Appendix A.
@@ -37,6 +36,7 @@ Respond ONLY with two integers separated by a single space. Do not include any o
 - Example output: 3 4
 """
 
+
 class SearchConfig(BaseModel):
     """
     Configuration model for the Advanced Azure AI Search service.
@@ -54,7 +54,8 @@ class SearchConfig(BaseModel):
         ..., description="The name of the target index in Azure AI Search."
     )
     semantic_configuration_name: Optional[str] = Field(
-        None, description="The name of the semantic configuration required if use_semantic_ranking is True."
+        None,
+        description="The name of the semantic configuration required if use_semantic_ranking is True.",
     )
 
     # Azure OpenAI Configuration
@@ -68,31 +69,42 @@ class SearchConfig(BaseModel):
         "2024-02-01", description="The API version for the Azure OpenAI service."
     )
     embedding_deployment_name: str = Field(
-        ..., description="The deployment name for the embeddings model (e.g., text-embedding-3-small)."
+        ...,
+        description="The deployment name for the embeddings model (e.g., text-embedding-3-small).",
     )
     generation_deployment_name: str = Field(
-        ..., description="The deployment name for the generation model (e.g., gpt-4o). Used for DAT and final answer."
+        ...,
+        description="The deployment name for the generation model (e.g., gpt-4o). Used for DAT and final answer.",
     )
 
     # Pipeline Behavior Configuration
     top_k_retrieval: int = Field(
-        20, description="The number of initial results to fetch from both lexical and vector searches."
+        20,
+        description="The number of initial results to fetch from both lexical and vector searches.",
     )
     use_semantic_ranking: bool = Field(
-        True, description="Flag to enable or disable Azure's Semantic Ranking feature after DAT fusion."
+        True,
+        description="Flag to enable or disable Azure's Semantic Ranking feature after DAT fusion.",
     )
     top_n_final: int = Field(
-        5, description="The number of re-ranked chunks to feed to the final answer generation model."
+        5,
+        description="The number of re-ranked chunks to feed to the final answer generation model.",
     )
     dat_prompt: str = Field(
-        DEFAULT_DAT_PROMPT, description="The prompt template to use for the Dynamic Alpha Tuning (DAT) scoring step."
+        DEFAULT_DAT_PROMPT,
+        description="The prompt template to use for the Dynamic Alpha Tuning (DAT) scoring step.",
     )
 
     # Index Schema Field Mappings (Defaults provided, adjust if necessary)
-    id_field: str = Field("id", description="The unique identifier field in the search index.")
-    content_field: str = Field("content", description="The primary text content field in the search index.")
-    vector_field: str = Field("vector", description="The vector embedding field in the search index.")
-
+    id_field: str = Field(
+        "id", description="The unique identifier field in the search index."
+    )
+    content_field: str = Field(
+        "content", description="The primary text content field in the search index."
+    )
+    vector_field: str = Field(
+        "vector", description="The vector embedding field in the search index."
+    )
 
     class Config:
         # Enforce immutability for configuration objects
