@@ -27,6 +27,9 @@ AssistantAgent = _AssistantAgent
 
 __all__ = ["ConversationFlow", "FunctionTool", "AssistantAgent"]
 
+_TOPK_DIRECT_DEFAULT: int = 3
+_TOPK_ASSIST_DEFAULT: int = 5
+
 
 class ConversationFlow(IConversationFlow):
     """
@@ -85,10 +88,13 @@ class ConversationFlow(IConversationFlow):
             # --------- DIRECT MODE (default) ---------
             if mode == "direct":
                 # Perform KB search directly (no AssistantAgent.on_messages)
+                # Resolve top-k (request → env → default)
+                top_k = self._get_top_k("direct", chat_request)
+                # Perform KB search directly (no AssistantAgent.on_messages)
                 search_text = await self._search_knowledge_base(
                     search_query=chat_request.user_prompt,
                     use_azure_search=use_azure_search,
-                    top_k=3,
+                    top_k=top_k,
                     logger=base_logger,
                 )
 
@@ -144,10 +150,11 @@ class ConversationFlow(IConversationFlow):
 
                 async def search_tool(search_query: str, topic: str = "general") -> str:
                     """Search for information using Azure AI Search or local ChromaDB."""
+                    top_k = self._get_top_k("assist", chat_request)
                     return await self._search_knowledge_base(
                         search_query=search_query,
                         use_azure_search=use_azure_search,
-                        top_k=5,
+                        top_k=top_k,
                         logger=base_logger,
                     )
 
@@ -257,10 +264,11 @@ class ConversationFlow(IConversationFlow):
             # Define a tool that uses our unified KB search helper (agent may call this)
             async def search_tool(search_query: str, topic: str = "general") -> str:
                 """Search for information using Azure AI Search or local ChromaDB."""
+                top_k = self._get_top_k("assist", chat_request)
                 return await self._search_knowledge_base(
                     search_query=search_query,
                     use_azure_search=use_azure_search,
-                    top_k=5,
+                    top_k=top_k,
                     logger=base_logger,
                 )
 
@@ -480,24 +488,31 @@ class ConversationFlow(IConversationFlow):
     def _ensure_default_azure_index(
         self, logger: Optional[logging.Logger] = None
     ) -> None:
-        """
-        If service.index_name is missing, set from env AZURE_SEARCH_DEFAULT_INDEX or 'test-index',
-        and emit a clear setup hint.
-        """
         service = self._azure_service()
         if not service:
             return
         idx = getattr(service, "index_name", "")
-        if not idx:
-            default_idx = os.getenv("AZURE_SEARCH_DEFAULT_INDEX", "test-index")
-            try:
-                setattr(service, "index_name", default_idx)
-            finally:
-                if logger:
-                    logger.warning(
-                        f"Azure Search 'index_name' not configured; using default '{default_idx}'. "
-                        "Set azure_search_services[0].index_name or AZURE_SEARCH_DEFAULT_INDEX to override."
-                    )
+        if idx:
+            return
+
+        env_idx = os.getenv("AZURE_SEARCH_DEFAULT_INDEX")
+        if env_idx:
+            setattr(service, "index_name", env_idx)
+            if logger:
+                logger.info(
+                    "Azure Search 'index_name' not configured; using env AZURE_SEARCH_DEFAULT_INDEX=%r.",
+                    env_idx,
+                )
+            return
+
+        default_idx = "test-index"
+        setattr(service, "index_name", default_idx)
+        if logger:
+            logger.warning(
+                "Azure Search 'index_name' not configured; using fallback default %r. "
+                "Set azure_search_services[0].index_name or AZURE_SEARCH_DEFAULT_INDEX to override.",
+                default_idx,
+            )
 
     def _should_use_azure_search(self) -> bool:
         """
@@ -517,6 +532,54 @@ class ConversationFlow(IConversationFlow):
         # Index name may be absent; we will fill it with a default when used.
         return self._is_azure_search_available()
 
+    # -----------------------------
+    # top-k resolution helpers
+    # -----------------------------
+    def _resolve_topk_from_request(self, chat_request: ChatRequest) -> Optional[int]:
+        """Return a positive int if the request carries an override."""
+        # 1) direct attributes (kb_top_k, top_k, search_top_k)
+        for attr in ("kb_top_k", "top_k", "search_top_k"):
+            val = getattr(chat_request, attr, None)
+            try:
+                if isinstance(val, int) and val > 0:
+                    return int(val)
+                if isinstance(val, str) and val.strip().isdigit() and int(val) > 0:
+                    return int(val)
+            except Exception:
+                pass
+        # 2) nested parameters dict (kb_top_k, top_k, search_top_k)
+        params = getattr(chat_request, "parameters", None)
+        if isinstance(params, dict):
+            for key in ("kb_top_k", "top_k", "search_top_k"):
+                val = params.get(key)
+                try:
+                    if isinstance(val, int) and val > 0:
+                        return int(val)
+                    if isinstance(val, str) and val.strip().isdigit() and int(val) > 0:
+                        return int(val)
+                except Exception:
+                    pass
+        return None
+
+    def _get_top_k(self, mode: str, chat_request: Optional[ChatRequest]) -> int:
+        """Priority: request override → env override → safe defaults."""
+        # 1) per-request
+        if chat_request is not None:
+            override = self._resolve_topk_from_request(chat_request)
+            if override:
+                return override
+        # 2) env override
+        if mode == "assist":
+            env_v = (os.getenv("KB_TOPK_ASSIST") or "").strip()
+            if env_v.isdigit() and int(env_v) > 0:
+                return int(env_v)
+            return _TOPK_ASSIST_DEFAULT
+        else:
+            env_v = (os.getenv("KB_TOPK_DIRECT") or "").strip()
+            if env_v.isdigit() and int(env_v) > 0:
+                return int(env_v)
+            return _TOPK_DIRECT_DEFAULT
+
     async def _search_knowledge_base(
         self,
         search_query: str,
@@ -524,16 +587,10 @@ class ConversationFlow(IConversationFlow):
         top_k: int,
         logger: Optional[logging.Logger] = None,
     ) -> str:
-        """
-        Unified knowledge-base search.
-        Returns a formatted text block matching test expectations.
-        Implements Azure->Chroma fallback if Azure is unavailable or fails.
-        """
         # ---- Azure path with safe fallback ----
         if use_azure_search:
             provider = None
             try:
-                # ⚠️8: Ensure a default index is present before constructing provider
                 self._ensure_default_azure_index(logger)
                 from ingenious.services.azure_search.provider import (
                     AzureSearchProvider,  # type: ignore
@@ -541,17 +598,25 @@ class ConversationFlow(IConversationFlow):
 
                 provider = AzureSearchProvider(self._config)
                 chunks: List[Dict] = await provider.retrieve(search_query, top_k=top_k)
-
                 if not chunks:
-                    # No hits: keep Azure semantics ("No relevant information..."), do NOT fall back
                     return f"No relevant information found in Azure AI Search for query: {search_query}"
 
                 parts: List[str] = []
                 for i, c in enumerate(chunks, 1):
-                    content = (c.get("content", "") or "")[:600]
-                    score = c.get("_final_score", "")
                     title = c.get("title", c.get("id", f"Source {i}"))
-                    parts.append(f"[{i}] {title} (score={score})\n{content}")
+                    score = c.get("_final_score", "")
+                    snippet = (c.get("snippet", "") or "")[:600]
+                    content = (c.get("content", "") or "")[:600]
+
+                    lines = []
+                    if snippet:
+                        lines.append(snippet)
+                    # include content if it exists and isn't a duplicate of snippet
+                    if content and content != snippet:
+                        lines.append(content)
+
+                    body = "\n".join(lines) if lines else ""
+                    parts.append(f"[{i}] {title} (score={score})\n{body}")
 
                 return (
                     "Found relevant information from Azure AI Search:\n\n"
@@ -576,21 +641,22 @@ class ConversationFlow(IConversationFlow):
                         await provider.close()
                     except Exception:
                         pass
-            # If we reach here, we are intentionally falling back to Chroma
-            # without surfacing an Azure error to the end user.
 
-        # ---- Local ChromaDB fallback/path ----
+        # ---- Local ChromaDB path (direct or Azure fallback) ----
+        knowledge_base_path = os.path.join(self._memory_path, "knowledge_base")
+        chroma_path = os.path.join(self._memory_path, "chroma_db")
+
+        # Direct Chroma (no Azure): if empty, return message *without* creating dirs
+        if not use_azure_search and not os.path.exists(knowledge_base_path):
+            return "Error: Knowledge base directory is empty. Please add documents to .tmp/knowledge_base/"
+
+        # Fallback (or direct with existing dir): ensure path exists now
+        os.makedirs(knowledge_base_path, exist_ok=True)
+
         try:
             import chromadb  # type: ignore
         except ImportError:
             return "Error: ChromaDB not installed. Please install with: uv add chromadb"
-
-        knowledge_base_path = os.path.join(self._memory_path, "knowledge_base")
-        chroma_path = os.path.join(self._memory_path, "chroma_db")
-
-        if not os.path.exists(knowledge_base_path):
-            os.makedirs(knowledge_base_path, exist_ok=True)
-            return "Error: Knowledge base directory is empty. Please add documents to .tmp/knowledge_base/"
 
         client = chromadb.PersistentClient(path=chroma_path)
         collection_name = "knowledge_base"
@@ -599,7 +665,6 @@ class ConversationFlow(IConversationFlow):
             collection = client.get_collection(name=collection_name)
         except Exception:
             collection = client.create_collection(name=collection_name)
-
             docs, ids = await self._read_kb_documents_offthread(knowledge_base_path)
             if docs:
                 try:
@@ -608,22 +673,23 @@ class ConversationFlow(IConversationFlow):
                     if logger:
                         logger.warning(f"ChromaDB add() failed: {e}")
             else:
+                # No docs after init — keep the message consistent with the tests
                 return "Error: No documents found in knowledge base directory"
 
         try:
-            results = collection.query(query_texts=[search_query], n_results=3)
+            results = collection.query(query_texts=[search_query], n_results=top_k)
         except Exception as e:
             if logger:
                 logger.error(f"ChromaDB query failed: {e}")
             return f"Search error: {str(e)}"
 
-        if results.get("documents") and results["documents"][0]:
-            joined = "\n\n".join(results["documents"][0])
-            return "Found relevant information from ChromaDB:\n\n" + joined
-        else:
-            return (
-                f"No relevant information found in ChromaDB for query: {search_query}"
+        docs = results.get("documents") or []
+        if docs and docs[0]:
+            return "Found relevant information from ChromaDB:\n\n" + "\n\n".join(
+                docs[0]
             )
+
+        return f"No relevant information found in ChromaDB for query: {search_query}"
 
     async def _read_kb_documents_offthread(
         self, kb_path: str

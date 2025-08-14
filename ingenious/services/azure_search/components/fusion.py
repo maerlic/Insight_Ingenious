@@ -1,13 +1,30 @@
-# Insight_Ingenious/ingenious/services/azure_search/components/fusion.py
+"""Provides a fusion engine for hybrid search results.
+
+This module implements Dynamic Alpha Tuning (DAT) to intelligently fuse results
+from parallel lexical (BM25) and vector (dense) search queries. It uses a
+Large Language Model (LLM) to evaluate the relevance of the top result from
+each search method against the user's query. Based on this evaluation, it
+calculates a dynamic weight (alpha, α) to combine the normalized scores from
+both result sets, producing a single, re-ranked list.
+
+The primary entry point is the `DynamicRankFuser` class and its `fuse` method.
+This component depends on an external LLM service (like Azure OpenAI) for the
+dynamic weight calculation.
+"""
+
+from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, cast
 
 try:
     from ingenious.services.azure_search.config import SearchConfig
 except ImportError:
     from ..config import SearchConfig
+
+if TYPE_CHECKING:
+    from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -15,13 +32,27 @@ logger = logging.getLogger(__name__)
 class DynamicRankFuser:
     """
     Implements Dynamic Alpha Tuning (DAT) to fuse results from lexical and vector searches.
+
     DAT uses an LLM to determine the optimal weighting (alpha) based on the specific query
     and the effectiveness of the top results from each retrieval method.
     Alpha (α) represents the weight assigned to Dense (Vector) retrieval. (1-α) is assigned to Sparse (BM25) retrieval.
     """
 
-    def __init__(self, config: SearchConfig, llm_client: Optional[Any] = None):
+    def __init__(
+        self, config: SearchConfig, llm_client: AsyncOpenAI | None = None
+    ) -> None:
+        """Initializes the fuser with configuration and an LLM client.
+
+        This sets up the fuser with the necessary search configuration. If an
+        LLM client isn't provided, it will create one on-demand using the
+        settings from the config.
+
+        Args:
+            config: The search configuration object.
+            llm_client: An optional pre-initialized asynchronous OpenAI client.
+        """
         self._config = config
+        self._llm_client: AsyncOpenAI
         if llm_client is None:
             from ..client_init import make_async_openai_client
 
@@ -30,11 +61,18 @@ class DynamicRankFuser:
             self._llm_client = llm_client
 
     async def _perform_dat(
-        self, query: str, top_lexical: Dict[str, Any], top_vector: Dict[str, Any]
+        self, query: str, top_lexical: dict[str, Any], top_vector: dict[str, Any]
     ) -> float:
         """
         Executes the Dynamic Alpha Tuning (DAT) step using the LLM.
-        Returns the calculated alpha (α), the weight for Dense (Vector) retrieval.
+
+        This method constructs a prompt with the query and the content of the top-1
+        result from both lexical and vector searches. It then sends this prompt to
+        the configured LLM to get relevance scores, which are used to calculate the
+        fusion weight (alpha).
+
+        Returns:
+            The calculated alpha (α), the weight for Dense (Vector) retrieval.
         """
         logger.info("Starting Dynamic Alpha Tuning (DAT) weight calculation...")
 
@@ -72,7 +110,16 @@ Question: {query}
             )
             return 0.5
 
-    def _parse_dat_scores(self, llm_output: str) -> Tuple[int, int]:
+    def _parse_dat_scores(self, llm_output: str) -> tuple[int, int]:
+        """Parses the two relevance scores from the LLM's raw string output.
+
+        This function is designed to robustly extract two integers from the LLM's
+        response, which represent the relevance scores (0-5) for the vector and
+        lexical results, respectively. It handles malformed or out-of-range outputs.
+
+        Returns:
+            A tuple containing the vector score and the lexical score.
+        """
         nums = re.findall(r"-?\d+", llm_output or "")
         if len(nums) >= 2:
             try:
@@ -91,7 +138,19 @@ Question: {query}
         return 0, 0
 
     def _calculate_alpha(self, score_vector: int, score_lexical: int) -> float:
-        """Implements the specific case-aware logic for calculating alpha (α) as defined in the DAT paper (Eq. 6)."""
+        """Implements the logic for calculating alpha (α) from relevance scores.
+
+        This calculation follows the specific case-aware logic defined in the
+        DAT paper (Eq. 6), handling edge cases where one or both methods are
+        judged to be maximally or minimally relevant.
+
+        Args:
+            score_vector: The LLM-assigned relevance score for the vector result (0-5).
+            score_lexical: The LLM-assigned relevance score for the lexical result (0-5).
+
+        Returns:
+            The final alpha weight, rounded to one decimal place.
+        """
         if score_vector == 0 and score_lexical == 0:
             alpha = 0.5
         elif score_vector == 5 and score_lexical != 5:
@@ -105,15 +164,21 @@ Question: {query}
 
         return round(alpha, 1)
 
-    def _normalize_scores(self, results: List[Dict[str, Any]]) -> None:
+    def _normalize_scores(self, results: list[dict[str, Any]]) -> None:
         """
-        Per-method Min-Max normalization (Section 3).
-        Degenerate case (max == min): assign constant 0.5 to all.
+        Performs in-place Min-Max normalization on retrieval scores for a set of results.
+
+        This method normalizes the `_retrieval_score` for each document within a
+        single result set (e.g., all lexical results) to a scale of [0, 1]. The
+        normalized score is stored in the `_normalized_score` field.
+
+        Why: Normalization is required before applying the fusion formula to ensure
+        scores from different methods are on a comparable scale.
         """
         if not results:
             return
 
-        raw_scores: List[float] = []
+        raw_scores: list[float] = []
         for r in results:
             s = r.get("_retrieval_score")
             try:
@@ -143,12 +208,24 @@ Question: {query}
     async def fuse(
         self,
         query: str,
-        lexical_results: List[Dict[str, Any]],
-        vector_results: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        lexical_results: list[dict[str, Any]],
+        vector_results: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """
         Fuses lexical and vector results using Dynamic Alpha Tuning (DAT).
-        R(q, d) = α(q) · S_dense_norm + (1 − α(q)) · S_BM25_norm
+
+        This is the main orchestration method. It calculates the dynamic alpha,
+        normalizes scores for each result set, then computes a final fused score
+        for each unique document based on the formula:
+        `R(q, d) = α(q) · S_dense_norm + (1 − α(q)) · S_BM25_norm`
+
+        Args:
+            query: The user's search query.
+            lexical_results: A list of documents from the lexical (BM25) search.
+            vector_results: A list of documents from the vector search.
+
+        Returns:
+            A single list of documents, sorted by the new fused score.
         """
         # ─────────────────────────────
         # 0) Fast exits
@@ -158,15 +235,16 @@ Question: {query}
 
         # ─────────────────────────────
         # 1) Compute α
-        #    - Use DAT only if both sides have a Top-1
-        #    - Otherwise use consistent defaults:
-        #        * only vector → α = 1.0
-        #        * only lexical → α = 0.0
+        #     - Use DAT only if both sides have a Top-1
+        #     - Otherwise use consistent defaults:
+        #         * only vector → α = 1.0
+        #         * only lexical → α = 0.0
         # ─────────────────────────────
+        alpha: float
         if lexical_results and vector_results:
             qkey = (query or "").strip().lower()
             if not hasattr(self, "_alpha_cache"):
-                self._alpha_cache: Dict[str, float] = {}
+                self._alpha_cache: dict[str, float] = {}
             if qkey in self._alpha_cache:
                 alpha = self._alpha_cache[qkey]
             else:
@@ -187,35 +265,37 @@ Question: {query}
         self._normalize_scores(lexical_results)
         self._normalize_scores(vector_results)
 
-        id_field = self._config.id_field
-        diag = bool(getattr(self._config, "expose_retrieval_diagnostics", False))
+        id_field: str = self._config.id_field
+        diag: bool = bool(getattr(self._config, "expose_retrieval_diagnostics", False))
 
         def _safe_float(x: Any) -> float:
+            """Safely converts a value to a float, returning 0.0 on failure."""
             try:
+                # The float() constructor can raise TypeError or ValueError
                 return float(x)
-            except Exception:
+            except (ValueError, TypeError):
                 return 0.0
 
         # Build normalized lookups
-        lex_norm_lookup: Dict[str, float] = {
+        lex_norm_lookup: dict[str, float] = {
             doc_id: _safe_float(r.get("_normalized_score"))
             for r in lexical_results
             if (doc_id := r.get(id_field)) is not None
         }
-        vec_norm_lookup: Dict[str, float] = {
+        vec_norm_lookup: dict[str, float] = {
             doc_id: _safe_float(r.get("_normalized_score"))
             for r in vector_results
             if (doc_id := r.get(id_field)) is not None
         }
 
         # Raw lookups for diagnostics
-        lex_raw_lookup = {
-            r.get(id_field): r.get("_retrieval_score")
+        lex_raw_lookup: dict[str, Any | None] = {
+            r.get(id_field): r.get("_retrieval_score")  # type: ignore[misc]
             for r in lexical_results
             if r.get(id_field)
         }
-        vec_raw_lookup = {
-            r.get(id_field): r.get("_retrieval_score")
+        vec_raw_lookup: dict[str, Any | None] = {
+            r.get(id_field): r.get("_retrieval_score")  # type: ignore[misc]
             for r in vector_results
             if r.get(id_field)
         }
@@ -223,13 +303,14 @@ Question: {query}
         # ─────────────────────────────
         # 3) Convex combination (core DAT)
         # ─────────────────────────────
-        fused_results: Dict[str, Dict[str, Any]] = {}
+        fused_results: dict[str, dict[str, Any]] = {}
 
         # Process lexical side first: (1 − α) · S_BM25_norm
         for result in lexical_results:
-            doc_id = result.get(id_field)
-            if not doc_id:
+            doc_id_any = result.get(id_field)
+            if not doc_id_any:
                 continue
+            doc_id = cast(str, doc_id_any)
 
             bm25_norm = lex_norm_lookup.get(doc_id, 0.0)
             vec_norm = vec_norm_lookup.get(doc_id, 0.0)
@@ -257,9 +338,10 @@ Question: {query}
 
         # Process vector side: α · S_dense_norm (and add if missing or merge if overlap)
         for result in vector_results:
-            doc_id = result.get(id_field)
-            if not doc_id:
+            doc_id_any = result.get(id_field)
+            if not doc_id_any:
                 continue
+            doc_id = cast(str, doc_id_any)
 
             vec_norm = vec_norm_lookup.get(doc_id, 0.0)
             bm25_norm = lex_norm_lookup.get(doc_id, 0.0)
@@ -305,14 +387,15 @@ Question: {query}
         # ─────────────────────────────
         overlap_ids = set(lex_norm_lookup.keys()) & set(vec_norm_lookup.keys())
 
-        def _sort_key(x: Dict[str, Any]) -> Tuple[float, int, float, str]:
-            doc_id = x.get(id_field) or ""
+        def _sort_key(x: dict[str, Any]) -> tuple[float, int, float, str]:
+            """Defines the sorting logic for the final ranked list."""
+            doc_id: str = str(x.get(id_field) or "")
             fused = _safe_float(x.get("_fused_score"))
             overlap = 1 if doc_id in overlap_ids else 0
             max_single = max(
                 lex_norm_lookup.get(doc_id, 0.0), vec_norm_lookup.get(doc_id, 0.0)
             )
-            return (fused, overlap, max_single, str(doc_id))
+            return (fused, overlap, max_single, doc_id)
 
         sorted_fused = sorted(fused_results.values(), key=_sort_key, reverse=True)
 
@@ -325,5 +408,9 @@ Question: {query}
         return sorted_fused
 
     async def close(self) -> None:
-        """Closes the underlying LLM client."""
+        """Closes the underlying asynchronous LLM client.
+
+        Why: This is important for graceful shutdown, ensuring that network
+        connections are properly terminated.
+        """
         await self._llm_client.close()

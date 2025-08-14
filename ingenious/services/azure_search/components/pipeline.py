@@ -27,7 +27,7 @@ class AdvancedSearchPipeline:
         config: SearchConfig,
         retriever: AzureSearchRetriever,
         fuser: DynamicRankFuser,
-        answer_generator: AnswerGenerator,
+        answer_generator: AnswerGenerator | None,
         rerank_client: SearchClient | None = None,
     ):
         self._config = config
@@ -198,12 +198,22 @@ class AdvancedSearchPipeline:
                 "source_chunks": [],
             }
 
-        # Step 5: Generation (RAG)
-        try:
-            answer = await self.answer_generator.generate(query, top_n_chunks)
-        except Exception as e:
-            logger.error(f"Error during generation phase: {e}")
-            raise RuntimeError("Answer Generation failed.") from e
+        # Step 5: Generation (RAG) – gated by flag
+        if (
+            not getattr(self._config, "enable_answer_generation", False)
+            or self.answer_generator is None
+        ):
+            logger.info("Answer generation disabled; returning retrieval-only results.")
+            return {
+                "answer": "",
+                "source_chunks": self._clean_sources(top_n_chunks),
+            }
+        else:
+            try:
+                answer = await self.answer_generator.generate(query, top_n_chunks)
+            except Exception as e:
+                logger.error(f"Error during generation phase: {e}")
+                raise RuntimeError("Answer Generation failed.") from e
 
         logger.info("Advanced Search Pipeline complete.")
         return {"answer": answer, "source_chunks": self._clean_sources(top_n_chunks)}
@@ -243,7 +253,8 @@ class AdvancedSearchPipeline:
         """Closes all underlying asynchronous clients."""
         await self.retriever.close()
         await self.fuser.close()
-        await self.answer_generator.close()
+        if self.answer_generator is not None:
+            await self.answer_generator.close()
         await self._rerank_client.close()
 
 
@@ -264,7 +275,11 @@ def build_search_pipeline(config: SearchConfig) -> AdvancedSearchPipeline:
     # Initialize components
     retriever = AzureSearchRetriever(config)
     fuser = DynamicRankFuser(config)
-    answer_generator = AnswerGenerator(config)
+    answer_generator = (
+        AnswerGenerator(config)
+        if getattr(config, "enable_answer_generation", False)
+        else None
+    )
 
     # Assemble the pipeline
     pipeline = AdvancedSearchPipeline(

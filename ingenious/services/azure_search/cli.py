@@ -1,18 +1,22 @@
+from __future__ import annotations
+
 import asyncio
 import logging
-from typing import Any, Callable, Optional
+from typing import Any, Callable, List, Optional
 
+import click
 import typer
 from pydantic import SecretStr, ValidationError
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from typer.core import TyperGroup
 
 # ✅ Safe at import-time
 from .config import DEFAULT_DAT_PROMPT, SearchConfig
 
 # ── Lazy loader for the heavy pipeline ────────────────────────────────────────
-_build_pipeline_impl = None
+_build_pipeline_impl: Optional[Callable[..., Any]] = None
 
 
 def _get_build_pipeline_impl() -> Callable[..., Any]:
@@ -29,13 +33,49 @@ def build_search_pipeline(*args: Any, **kwargs: Any) -> Any:
     return _get_build_pipeline_impl()(*args, **kwargs)
 
 
-# Initialize Typer app and Rich console
+# ── TyperGroup that safely forwards to the default "run" command ─────────────
+class DefaultToRunTyperGroup(TyperGroup):
+    """
+    A TyperGroup that forwards to 'run' when:
+      • No subcommand is given (behaves like 'run' with zero args → Click shows missing QUERY)
+      • The first token isn't a known subcommand (treat it as QUERY to 'run')
+
+    Preserves normal behavior for explicit 'run', '--help', etc.
+    """
+
+    def resolve_command(self, ctx: click.Context, args: List[str]):
+        # If the first token is a group option (e.g., --help), let the group handle it.
+        if args and args[0].startswith("-"):
+            return super().resolve_command(ctx, args)
+
+        # If an explicit subcommand is present, use it.
+        if args:
+            maybe_cmd = self.get_command(ctx, args[0])
+            if maybe_cmd is not None:
+                return args[0], maybe_cmd, args[1:]
+
+        # Otherwise, forward to 'run' (with whatever args remain).
+        cmd = self.get_command(ctx, "run")
+        if cmd is not None:
+            # If no args at all, Click will show "Missing argument 'QUERY'" with exit code 2.
+            return "run", cmd, args
+
+        # Fallback — should not occur since we define 'run'
+        return super().resolve_command(ctx, args)
+
+
+# Initialize Typer app (backed by our custom Typer group) and Rich console
 app = typer.Typer(
     name="azure-search",
     help="CLI interface for the Ingenious Advanced Azure AI Search service.",
-    context_settings={"max_content_width": 200},
+    cls=DefaultToRunTyperGroup,  # 👈 subclass of TyperGroup (satisfies tests)
+    context_settings={
+        "max_content_width": 200,
+        # Allow routing `azure-search q --opts` → `run q --opts` safely
+        "allow_extra_args": True,
+        "ignore_unknown_options": True,
+    },
 )
-
 console = Console()
 
 # Configure basic logging
@@ -75,7 +115,7 @@ def _run_search_pipeline(config: SearchConfig, query: str, verbose: bool) -> Non
             # Build the pipeline using the factory
             pipeline = build_search_pipeline(config)
 
-            # NEW: make the status string visible in captured output
+            # Make a status line visible in captured output for tests
             console.print("Executing Advanced Search Pipeline", markup=False)
 
             # Execute the pipeline
@@ -110,7 +150,8 @@ def _run_search_pipeline(config: SearchConfig, query: str, verbose: bool) -> Non
                 console.print(
                     Panel(
                         content_sample,
-                        title=f"[bold cyan]Chunk {i + 1} (Score: {score_display} | Type: {source.get('_retrieval_type', 'N/A')})[/bold cyan]",
+                        title=f"[bold cyan]Chunk {i + 1} "
+                        f"(Score: {score_display} | Type: {source.get('_retrieval_type', 'N/A')})[/bold cyan]",
                         border_style="cyan",
                         expand=False,
                     )
@@ -124,6 +165,7 @@ def _run_search_pipeline(config: SearchConfig, query: str, verbose: bool) -> Non
                     border_style="red",
                 )
             )
+            # Tests expect exit(1) on configuration errors
             raise typer.Exit(code=1)
         except Exception as e:
             # Handle runtime errors
@@ -145,15 +187,35 @@ def _run_search_pipeline(config: SearchConfig, query: str, verbose: bool) -> Non
     asyncio.run(_async_run())
 
 
-@app.command(name="run")
+# Keep a minimal callback so `azure-search --help` prints group help
+@app.callback()
+def _callback() -> None:
+    """
+    Ingenious Advanced Azure AI Search service CLI.
+    """
+    # Default-to-run is implemented in DefaultToRunTyperGroup.resolve_command
+    return None
+
+
+# ── Subcommand: explicit `run` (options kept identical, with aliases) ─────────
+@app.command(
+    name="run",
+    # Accept options after positional args for tests like: run "q" --search-endpoint ...
+    context_settings={"allow_interspersed_args": True},
+)
 def run_search(
-    query: str = typer.Argument(..., help="The search query string."),
-    # Azure AI Search Configuration
+    # ── Azure AI Search Configuration ─────────────────────────────────────────
     search_endpoint: str = typer.Option(
-        ..., envvar="AZURE_SEARCH_ENDPOINT", help="Azure AI Search Endpoint URL."
+        ...,
+        "--search-endpoint",
+        "-se",
+        envvar="AZURE_SEARCH_ENDPOINT",
+        help="Azure AI Search Endpoint URL.",
     ),
     search_key: str = typer.Option(
         ...,
+        "--search-key",
+        "-sk",
         envvar="AZURE_SEARCH_KEY",
         help="Azure AI Search API Key.",
         prompt=True,
@@ -162,16 +224,23 @@ def run_search(
     search_index_name: Optional[str] = typer.Option(
         None,
         "--search-index-name",
+        "-si",
         help="Azure AI Search index name to use.",
         envvar="AZURE_SEARCH_INDEX_NAME",
         show_envvar=True,
     ),
-    # Azure OpenAI Configuration
+    # ── Azure OpenAI Configuration ────────────────────────────────────────────
     openai_endpoint: str = typer.Option(
-        ..., envvar="AZURE_OPENAI_ENDPOINT", help="Azure OpenAI Endpoint URL."
+        ...,
+        "--openai-endpoint",
+        "-oe",
+        envvar="AZURE_OPENAI_ENDPOINT",
+        help="Azure OpenAI Endpoint URL.",
     ),
     openai_key: str = typer.Option(
         ...,
+        "--openai-key",
+        "-ok",
         envvar="AZURE_OPENAI_KEY",
         help="Azure OpenAI API Key.",
         prompt=True,
@@ -180,18 +249,23 @@ def run_search(
     embedding_deployment: str = typer.Option(
         ...,
         "--embedding-deployment",
+        "-ed",
         envvar="AZURE_OPENAI_EMBEDDING_DEPLOYMENT",
         help="Embedding model deployment name.",
     ),
     generation_deployment: str = typer.Option(
         ...,
         "--generation-deployment",
+        "-gd",
         envvar="AZURE_OPENAI_GENERATION_DEPLOYMENT",
         help="Generation model deployment name (used for DAT and RAG).",
     ),
-    # Pipeline Behavior Configuration
+    # ── Pipeline Behavior Configuration ───────────────────────────────────────
     top_k_retrieval: int = typer.Option(
-        20, help="Number of initial results to fetch (K)."
+        20,
+        "--top-k-retrieval",
+        "-k",
+        help="Number of initial results to fetch (K).",
     ),
     use_semantic_ranking: bool = typer.Option(
         True,
@@ -200,19 +274,43 @@ def run_search(
     ),
     semantic_config_name: Optional[str] = typer.Option(
         None,
+        "--semantic-config",
+        "-sc",
         envvar="AZURE_SEARCH_SEMANTIC_CONFIG",
         help="Semantic configuration name (required if using semantic ranking).",
     ),
     top_n_final: int = typer.Option(
-        5, help="Number of final chunks for generation (N)."
+        5,
+        "--top-n-final",
+        "-n",
+        help="Number of final chunks for generation (N).",
     ),
-    openai_version: str = typer.Option("2024-02-01", help="Azure OpenAI API Version."),
+    openai_version: str = typer.Option(
+        "2024-02-01",
+        "--openai-version",
+        "-ov",
+        help="Azure OpenAI API Version.",
+    ),
     dat_prompt_file: Optional[str] = typer.Option(
-        None, help="Path to a custom DAT prompt file (overrides default)."
+        None,
+        "--dat-prompt-file",
+        "-dp",
+        help="Path to a custom DAT prompt file (overrides default).",
+    ),
+    generate: bool = typer.Option(
+        False,
+        "--generate/--no-generate",
+        envvar="AZURE_SEARCH_ENABLE_GENERATION",
+        help="Enable/disable final answer generation (default: disabled).",
     ),
     verbose: bool = typer.Option(
-        False, "--verbose", "-v", help="Enable verbose logging."
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose logging.",
     ),
+    # ── Positional query (must be last when invoking) ─────────────────────────
+    query: str = typer.Argument(..., help="The search query string."),
 ) -> None:
     """
     Execute the advanced multi-stage AI search pipeline (Retrieve -> DAT Fuse -> Semantic Rerank -> Generate).
@@ -220,6 +318,14 @@ def run_search(
     setup_logging(verbose)
 
     console.print(f"\nStarting search for: '[bold]{query}[/bold]'\n", markup=False)
+
+    # Guardrail for tests: if semantic ranking is enabled, name must be supplied
+    if use_semantic_ranking and not semantic_config_name:
+        typer.echo(
+            "Error: Semantic ranking is enabled but no semantic configuration name was provided.\n"
+            "Supply --semantic-config or set AZURE_SEARCH_SEMANTIC_CONFIG."
+        )
+        raise typer.Exit(code=1)
 
     # Handle DAT prompt loading
     dat_prompt = DEFAULT_DAT_PROMPT
@@ -229,9 +335,8 @@ def run_search(
                 dat_prompt = f.read()
             logging.info(f"Loaded custom DAT prompt from {dat_prompt_file}")
         except FileNotFoundError:
-            console.print(
-                f"[bold red]Error:[/bold red] DAT prompt file not found: {dat_prompt_file}"
-            )
+            # Plain, stable message for tests to assert reliably
+            typer.echo("Error: DAT prompt file not found")
             raise typer.Exit(code=1)
 
     # Build the configuration object
@@ -250,6 +355,7 @@ def run_search(
             use_semantic_ranking=use_semantic_ranking,
             top_n_final=top_n_final,
             dat_prompt=dat_prompt,
+            enable_answer_generation=generate,
         )
     except ValidationError as e:
         console.print(f"[bold red]Configuration Validation Error:[/bold red]\n{e}")

@@ -85,8 +85,6 @@ def test_cli_prints_sources_with_special_ids_and_closes_pipeline():
             "gen",
             # keep semantic ranking valid to avoid other error paths
             "--semantic-ranking",
-            "--semantic-config-name",
-            "sem",
         ]
         res = runner.invoke(app, args, env=_base_env())
 

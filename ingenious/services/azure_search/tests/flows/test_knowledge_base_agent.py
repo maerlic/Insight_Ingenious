@@ -1,7 +1,9 @@
 # tests/flows/test_knowledge_base_agent.py
-import asyncio
+import inspect
+import sys
 from dataclasses import dataclass
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -16,7 +18,7 @@ from ingenious.services.chat_services.multi_agent.conversation_flows.knowledge_b
 
 @dataclass
 class FunctionToolShim:
-    func: any
+    func: Any
     description: str = ""
 
 
@@ -36,20 +38,18 @@ class MockAssistantAgent:
         # Extract the actual question text from the single user message string
         user_text = messages[0].content
         q = (
-            user_text.split("User question:")[-1].strip()
+            user_text.split("User question:", 1)[-1].strip()
             if "User question:" in user_text
-            else user_text
+            else user_text.strip()
         )
 
         # Use first tool if present to simulate a search
         out = "no-tool"
         if self.tools:
             tool = self.tools[0]
-            out = (
-                asyncio.get_event_loop().run_until_complete(tool.func(q))
-                if asyncio.get_event_loop().is_running()
-                else asyncio.run(tool.func(q))
-            )
+            fn = getattr(tool, "func", tool)
+            result = fn(q)
+            out = await result if inspect.isawaitable(result) else result
         return MockAssistantResponse(out)
 
     def run_stream(self, task, cancellation_token=None):
@@ -81,8 +81,8 @@ def patch_tool_and_agent(monkeypatch):
 
 @pytest.fixture
 def mock_model_client(monkeypatch):
-    # Patch the model client factory to return an object with close()
-    fake_client = AsyncMock()
+    # Provide an object with an async close() we can assert against
+    fake_client = SimpleNamespace(close=AsyncMock())
     monkeypatch.setattr(
         "ingenious.services.chat_services.multi_agent.conversation_flows.knowledge_base_agent.knowledge_base_agent.create_aoai_chat_completion_client_from_config",
         lambda _: fake_client,
@@ -153,7 +153,7 @@ async def test_kb_agent_chroma_fallback_empty_dir_message(
     flow._chat_service = None
     flow._memory_path = str(tmp_path)
 
-    # Patch chromadb so PersistentClient exists but knowledge base dir is empty
+    # If chromadb ever gets imported in this path, ensure it's available as a fake module
     class FakeChroma:
         class PersistentClient:
             def __init__(self, path):
@@ -165,7 +165,7 @@ async def test_kb_agent_chroma_fallback_empty_dir_message(
             def create_collection(self, name):
                 return SimpleNamespace(add=lambda **kwargs: None)
 
-    monkeypatch.setitem(globals(), "chromadb", FakeChroma)  # not strictly necessary
+    monkeypatch.setitem(sys.modules, "chromadb", FakeChroma)
 
     req = ChatRequest(user_prompt="anything", thread_id=None)
     resp = await flow.get_conversation_response(req)

@@ -48,11 +48,15 @@ def test_build_search_pipeline_success(config: SearchConfig, monkeypatch):
         MockG,
         raising=False,
     )
-    p = build_search_pipeline(config)
+
+    # Create a mutable copy and enable answer generation for this test
+    mutable_config = config.model_copy(update={"enable_answer_generation": True})
+
+    p = build_search_pipeline(mutable_config)
     assert isinstance(p, AdvancedSearchPipeline)
-    MockR.assert_called_once_with(config)
-    MockF.assert_called_once_with(config)
-    MockG.assert_called_once_with(config)
+    MockR.assert_called_once_with(mutable_config)
+    MockF.assert_called_once_with(mutable_config)
+    MockG.assert_called_once_with(mutable_config)
 
 
 def test_build_search_pipeline_validation_error(config_no_semantic: SearchConfig):
@@ -62,7 +66,17 @@ def test_build_search_pipeline_validation_error(config_no_semantic: SearchConfig
     data["semantic_configuration_name"] = None
     data["search_key"] = config_no_semantic.search_key
     data["openai_key"] = config_no_semantic.openai_key
-    invalid = SearchConfig(**data)
+
+    # Since the config model is frozen, we must create a new instance for testing
+    invalid_dict = config_no_semantic.model_dump()
+    invalid_dict.update(
+        {
+            "use_semantic_ranking": True,
+            "semantic_configuration_name": None,
+        }
+    )
+    invalid = SearchConfig(**invalid_dict)
+
     with pytest.raises(ValueError):
         build_search_pipeline(invalid)
 
@@ -87,16 +101,16 @@ async def test_apply_semantic_ranking_happy(config: SearchConfig, monkeypatch):
         {"id": "B", "content": "B", "_fused_score": 0.7, "_retrieval_type": "vector"},
     ]
     # Rerank returns reversed with scores
-    p._rerank_client.search = AsyncMock(
-        return_value=__import__(
-            "ingenious.services.azure_search.tests.conftest", fromlist=["AsyncIter"]
-        ).AsyncIter(
-            [
-                {"id": "B", "@search.reranker_score": 3.0, "content": "B2"},
-                {"id": "A", "@search.reranker_score": 2.5, "content": "A2"},
-            ]
-        )
+    async_iter_mock = __import__(
+        "ingenious.services.azure_search.tests.conftest", fromlist=["AsyncIter"]
+    ).AsyncIter(
+        [
+            {"id": "B", "@search.reranker_score": 3.0, "content": "B2"},
+            {"id": "A", "@search.reranker_score": 2.5, "content": "A2"},
+        ]
     )
+    p._rerank_client.search = AsyncMock(return_value=async_iter_mock)
+
     out = await p._apply_semantic_ranking("q", fused)
     assert [d["id"] for d in out] == ["B", "A"]
     assert out[0]["_final_score"] == 3.0
@@ -109,13 +123,12 @@ async def test_apply_semantic_ranking_truncation(config: SearchConfig):
     r, f, g = MagicMock(), MagicMock(), MagicMock()
     p = AdvancedSearchPipeline(config, r, f, g)
     fused = [{"id": f"doc_{i}", "_fused_score": 1.0} for i in range(55)]
-    p._rerank_client.search = AsyncMock(
-        return_value=__import__(
-            "ingenious.services.azure_search.tests.conftest", fromlist=["AsyncIter"]
-        ).AsyncIter(
-            [{"id": f"doc_{i}", "@search.reranker_score": 3.0} for i in range(50)]
-        )
-    )
+
+    async_iter_mock = __import__(
+        "ingenious.services.azure_search.tests.conftest", fromlist=["AsyncIter"]
+    ).AsyncIter([{"id": f"doc_{i}", "@search.reranker_score": 3.0} for i in range(50)])
+    p._rerank_client.search = AsyncMock(return_value=async_iter_mock)
+
     out = await p._apply_semantic_ranking("q", fused)
     assert len(out) == 55
     assert out[0]["_final_score"] == 3.0
@@ -126,18 +139,21 @@ async def test_apply_semantic_ranking_truncation(config: SearchConfig):
 @pytest.mark.asyncio
 async def test_apply_semantic_ranking_edge_and_fallback(config: SearchConfig):
     r, f, g = MagicMock(), MagicMock(), MagicMock()
-    p = AdvancedSearchPipeline(config, r, f, g)
+
+    # Create a mutable copy for testing different configurations
+    mutable_config = config.model_copy(update={})
+    p = AdvancedSearchPipeline(mutable_config, r, f, g)
 
     # Empty input
     assert await p._apply_semantic_ranking("q", []) == []
 
     # Missing id field: tweak config so id_field not present
-    p._config = p._config.model_copy(update={"id_field": "nope"})
+    p._config = mutable_config.model_copy(update={"id_field": "nope"})
     fused = [{"id": "A"}]
     assert await p._apply_semantic_ranking("q", fused) == fused
 
     # API error fallback -> copies _fused_score to _final_score
-    p._config = p._config.model_copy(update={"id_field": "id"})  # restore
+    p._config = mutable_config.model_copy(update={"id_field": "id"})  # restore
     fused = [{"id": "A", "_fused_score": 0.9}]
 
     async def boom(*a, **k):
@@ -167,7 +183,8 @@ def test_clean_sources_removes_internal(config: SearchConfig):
         }
     ]
     out = p._clean_sources(rows)
-    assert out[0]["id"] == "1"
+    # The id field is now correctly accessed via the config object
+    assert out[0][config.id_field] == "1"
     assert out[0]["_final_score"] == 3.3
     assert out[0]["_retrieval_type"] == "hybrid"
     for k in (
@@ -184,11 +201,14 @@ def test_clean_sources_removes_internal(config: SearchConfig):
 
 @pytest.mark.asyncio
 async def test_get_answer_paths(config: SearchConfig, monkeypatch):
+    # Create a mutable copy and enable answer generation for the happy path
+    config_with_gen = config.model_copy(update={"enable_answer_generation": True})
+
     # Compose a real pipeline with mocked submethods
     r = MagicMock()
     f = MagicMock()
     g = MagicMock()
-    p = AdvancedSearchPipeline(config, r, f, g)
+    p = AdvancedSearchPipeline(config_with_gen, r, f, g)
 
     # happy path with semantic
     r.search_lexical = AsyncMock(return_value=[{"id": "L1"}])
@@ -209,7 +229,7 @@ async def test_get_answer_paths(config: SearchConfig, monkeypatch):
     assert "could not find" in out2["answer"].lower()
 
     # no semantic path
-    cfg2 = config.model_copy(update={"use_semantic_ranking": False})
+    cfg2 = config_with_gen.model_copy(update={"use_semantic_ranking": False})
     p2 = AdvancedSearchPipeline(cfg2, r, f, g)
     r.search_lexical = AsyncMock(return_value=[{"id": "L"}])
     r.search_vector = AsyncMock(return_value=[{"id": "V"}])
@@ -226,10 +246,14 @@ async def test_pipeline_close(config: SearchConfig):
     # add async close methods
     for comp in (r, f, g):
         comp.close = AsyncMock()
+
+    # Create a pipeline instance for the test
     p = AdvancedSearchPipeline(config, r, f, g)
     p._rerank_client.close = AsyncMock()
     await p.close()
     r.close.assert_awaited()
     f.close.assert_awaited()
-    g.close.assert_awaited()
+    # g.close() should only be awaited if g is not None
+    if g is not None:
+        g.close.assert_awaited()
     p._rerank_client.close.assert_awaited()

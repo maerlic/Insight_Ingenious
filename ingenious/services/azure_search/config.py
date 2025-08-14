@@ -105,6 +105,11 @@ class SearchConfig(BaseModel):
     vector_field: str = Field(
         "vector", description="The vector embedding field in the search index."
     )
+    # ── Generation toggle ─────────────────────────────────────────────────────
+    enable_answer_generation: bool = Field(
+        False,
+        description="If True, the pipeline will call the LLM to synthesize a final answer.",
+    )
 
     class Config:
         # Enforce immutability for configuration objects
