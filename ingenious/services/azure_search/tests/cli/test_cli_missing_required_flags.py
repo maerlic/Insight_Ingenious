@@ -1,25 +1,38 @@
-# tests/azure_search/test_cli_missing_required_flags.py
+"""Verify CLI commands fail gracefully when required configuration is missing.
+
+This module contains tests for the command-line interface (CLI) that
+specifically check for correct error handling when required arguments or
+environment variables are omitted. The goal is to ensure the CLI provides
+clear, actionable feedback to the user and exits with a non-zero status
+code upon validation failure.
+"""
+
 # -*- coding: utf-8 -*-
+from typing import TYPE_CHECKING
+
 import pytest
 from typer.testing import CliRunner
+
+if TYPE_CHECKING:
+    from typer.testing import Result
 
 
 @pytest.mark.skip(
     reason="CLI currently allows missing index name with default/fallback behavior"
 )
-def test_cli_missing_search_index_name_exits_nonzero():
-    """
-    Azure Search CLI should fail fast when the required index name is missing.
-    We check stderr (Typer/Click prints validation errors there) and ensure a non-zero exit.
+def test_cli_missing_search_index_name_exits_nonzero() -> None:
+    """Verify the CLI exits with a non-zero code if the index name is missing.
 
-    NOTE: Currently skipped because the CLI appears to have a default value or
-    fallback behavior that allows it to run without AZURE_SEARCH_INDEX_NAME.
+    This test ensures that the Azure Search command fails fast with a clear
+    error message when a required environment variable (`AZURE_SEARCH_INDEX_NAME`)
+    is not provided. It checks for a non-zero exit code and an informative
+    error message in stderr.
     """
     from ingenious.cli.main import app  # import after app wiring
 
-    runner = CliRunner()
+    runner: CliRunner = CliRunner()
 
-    env = {
+    env: dict[str, str] = {
         "AZURE_SEARCH_ENDPOINT": "https://unit.search.windows.net",
         "AZURE_SEARCH_KEY": "sk",
         # "AZURE_SEARCH_INDEX_NAME": intentionally omitted
@@ -29,11 +42,11 @@ def test_cli_missing_search_index_name_exits_nonzero():
         "AZURE_OPENAI_GENERATION_DEPLOYMENT": "gen",
     }
 
-    res = runner.invoke(app, ["azure-search", "run", "q"], env=env)
+    res: Result = runner.invoke(app, ["azure-search", "run", "q"], env=env)
     # Non-zero exit is sufficient (Click uses code 2 for bad params, 1 for exceptions)
     assert res.exit_code != 0, (res.stdout or "") + (res.stderr or "")
 
-    combined = (res.stderr or "") + (res.stdout or "")
+    combined: str = (res.stderr or "") + (res.stdout or "")
     # Be tolerant to phrasing differences between Pydantic/our wrapper
     assert any(
         s in combined

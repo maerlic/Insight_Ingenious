@@ -1,20 +1,30 @@
 # -- coding: utf-8 --
+"""Validate the Azure Search configuration model.
 
+This test module ensures that the `SearchConfig` Pydantic model behaves as
+expected. It validates required fields, confirms the application of default
+values, and verifies the model's immutability (`frozen=True`). These tests
+guarantee that the configuration used by the search service is always valid
+and prevents accidental modification at runtime. A basic sanity check of the
+default prompt content is also included.
 """
-FILE TEST PLAN
 
-    Validate SearchConfig required fields and defaults.
-    Confirm immutability (frozen model).
-    Sanity-check DEFAULT_DAT_PROMPT structure and key guidance.
-"""
+from __future__ import annotations
 
-import pytest
+from typing import Any
+
+import pytest  # type: ignore[import-untyped]
 from pydantic import SecretStr, ValidationError
 
 from ingenious.services.azure_search.config import DEFAULT_DAT_PROMPT, SearchConfig
 
 
-def test_search_config_valid(config: SearchConfig):
+def test_search_config_valid(config: SearchConfig) -> None:
+    """Validate a properly configured SearchConfig instance.
+
+    This test ensures that when a valid configuration is provided, all fields
+    are correctly parsed and have the expected formats or values.
+    """
     assert config.search_endpoint.startswith("https://")
     assert config.openai_endpoint.startswith("https://")
     assert isinstance(config.search_key, SecretStr)
@@ -25,23 +35,34 @@ def test_search_config_valid(config: SearchConfig):
     assert config.use_semantic_ranking is True
 
 
-def test_search_config_missing_required_fields():
-    data = dict(
+def test_search_config_missing_required_fields() -> None:
+    """Verify ValidationError is raised for missing required fields.
+
+    This test ensures the model's validation enforces the presence of essential
+    configuration like API endpoints and keys, which are critical for operation.
+    """
+    data: dict[str, Any] = dict(
         search_endpoint="http://localhost",
         search_key=SecretStr("x"),
         search_index_name="idx",
     )
     with pytest.raises(ValidationError) as e:
         SearchConfig(**data)
-    locs = {tuple(err["loc"]) for err in e.value.errors()}
+    locs: set[tuple[str, ...]] = {tuple(err["loc"]) for err in e.value.errors()}
     assert ("openai_endpoint",) in locs
     assert ("openai_key",) in locs
     assert ("embedding_deployment_name",) in locs
     assert ("generation_deployment_name",) in locs
 
 
-def test_search_config_defaults_minimal_ok():
-    cfg = SearchConfig(
+def test_search_config_defaults_minimal_ok() -> None:
+    """Confirm default values are applied for optional fields.
+
+    This test checks that when a user provides only the required fields, the
+    model correctly populates sensible defaults for optional settings like
+    retrieval counts and field names.
+    """
+    cfg: SearchConfig = SearchConfig(
         search_endpoint="http://s",
         search_key=SecretStr("a"),
         search_index_name="i",
@@ -59,13 +80,25 @@ def test_search_config_defaults_minimal_ok():
     assert cfg.semantic_configuration_name is None
 
 
-def test_search_config_is_frozen(config: SearchConfig):
+def test_search_config_is_frozen(config: SearchConfig) -> None:
+    """Ensure the SearchConfig model is immutable.
+
+    This test verifies that the `frozen=True` Pydantic setting correctly
+    prevents attribute modification after instantiation, which helps avoid
+    unexpected state changes during the application's lifecycle.
+    """
     with pytest.raises(ValidationError):
         config.top_k_retrieval = 99  # type: ignore[misc]
 
 
-def test_default_dat_prompt_has_key_sections():
-    s = DEFAULT_DAT_PROMPT
+def test_default_dat_prompt_has_key_sections() -> None:
+    """Sanity-check the content of the default DAT prompt.
+
+    This test performs a basic check to ensure the default prompt string
+    contains key instructional phrases, guarding against accidental regressions
+    or malformed prompt content.
+    """
+    s: str = DEFAULT_DAT_PROMPT
     assert "System:" in s
     assert "Scoring Criteria" in s
     assert "Direct Hit -> 5 points" in s

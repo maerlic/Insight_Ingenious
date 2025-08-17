@@ -1,6 +1,17 @@
-# tests/azure_search/test_model_selection.py
+"""Test model selection logic for Azure Search configuration builders.
+
+This module verifies that the configuration builder functions correctly validate
+and select Azure OpenAI models for chat and embedding roles. It ensures that
+common misconfigurations, such as missing deployment names or conflicting
+deployment assignments, are caught early and raise appropriate errors.
+
+The primary function under test is `build_search_config_from_settings`.
+"""
+
+from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -12,13 +23,15 @@ from ingenious.services.azure_search.builders import (
 )
 
 
-def _settings(**overrides):
-    """
-    Tiny helper that mimics the shape your builders expect.
+def _settings(**overrides: Any) -> SimpleNamespace:
+    """Create a mock settings object for builder tests.
+
+    This helper mimics the shape of the configuration object that the builder
+    functions expect, allowing for isolated testing of model selection logic.
     If your project already exposes a fixture/helper, prefer that instead.
     """
     # Minimal model items: provider, role, deployment, endpoint/key, api_version
-    models = overrides.pop(
+    models: list[SimpleNamespace] = overrides.pop(
         "models",
         [
             # Chat model with deployment
@@ -45,7 +58,7 @@ def _settings(**overrides):
     )
 
     # Minimal azure search service entry
-    azure_search_services = overrides.pop(
+    azure_search_services: list[SimpleNamespace] = overrides.pop(
         "azure_search_services",
         [
             SimpleNamespace(
@@ -63,11 +76,14 @@ def _settings(**overrides):
     )
 
 
-def test_pick_models_requires_embedding_deployment():
+def test_pick_models_requires_embedding_deployment() -> None:
+    """Verify `_pick_models` raises an error if an embedding model lacks a deployment.
+
+    This test ensures that the model selection logic enforces a critical
+    precondition: an Azure OpenAI embedding model must have a non-empty
+    deployment name to be usable by the search service.
     """
-    Ensures _pick_models fails when an embedding model is present but its deployment is empty.
-    """
-    s = _settings()
+    s: SimpleNamespace = _settings()
     with pytest.raises(
         ValueError
     ):  # The builders typically raise ValueError for selection faults
@@ -86,13 +102,15 @@ def test_pick_models_requires_embedding_deployment():
     ],
 )
 def test_builder_rejects_same_deployments_for_embed_and_chat(
-    embed_dep, chat_dep, should_raise
-):
+    embed_dep: str, chat_dep: str, should_raise: bool
+) -> None:
+    """Verify builder rejects configs where chat and embedding models share a deployment.
+
+    This test enforces a policy that the chat and embedding models must use
+    distinct deployments. This prevents potential API conflicts or billing
+    ambiguity where a single endpoint serves multiple model types.
     """
-    Optional policy: enforce that embedding and chat deployments differ.
-    If you haven't added the guard yet, mark this test xfail (see below).
-    """
-    s = _settings(
+    s: SimpleNamespace = _settings(
         models=[
             SimpleNamespace(
                 provider="azure_openai",
@@ -119,7 +137,7 @@ def test_builder_rejects_same_deployments_for_embed_and_chat(
         with pytest.raises(ConfigError):
             build_search_config_from_settings(s)
     else:
-        cfg = build_search_config_from_settings(s)
+        cfg: Any = build_search_config_from_settings(s)
         # Sanity: the builder still returns a config object if deployments differ
         assert hasattr(cfg, "openai"), (
             "Expected a SearchConfig-like object with .openai fields"

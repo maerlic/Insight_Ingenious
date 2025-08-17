@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
@@ -16,6 +16,9 @@ class IChatRequest(BaseModel):
     thread_chat_history: Optional[dict[str, str]] = Field(default_factory=dict)
     thread_memory: Optional[str] = None
     stream: Optional[bool] = False
+    # Optional overrides for KB behavior
+    kb_top_k: Optional[int] = None
+    parameters: Optional[Dict[str, Any]] = None
 
 
 class IChatResponse(BaseModel):

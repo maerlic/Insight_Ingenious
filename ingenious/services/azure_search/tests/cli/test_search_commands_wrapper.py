@@ -1,10 +1,22 @@
-# tests/cli/test_search_commands_wrapper.py
+"""Tests the command registration wrapper for search functionalities.
+
+This module verifies that the search-related CLI commands are correctly
+registered with the main Typer application. It ensures that the
+`register_commands` function successfully adds the `azure-search`
+subcommand and its own subcommands (like `run`) to the application's
+command structure. This is a simple integration test to confirm
+CLI entry points are available.
+"""
+
+from __future__ import annotations
+
 import typer
 from rich.console import Console
 from typer.testing import CliRunner
 
 
-def test_search_commands_register_adds_typer():
+def test_search_commands_register_adds_typer() -> None:
+    """Verify that search commands are registered with the Typer app."""
     from ingenious.cli.search_commands import register_commands
 
     app = typer.Typer()

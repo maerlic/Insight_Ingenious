@@ -1,13 +1,30 @@
-# tests/cli/test_azure_search_cli_features.py
+"""Tests specific feature flags and behaviors for the Azure Search CLI.
+
+This module contains integration tests for the Azure Search command-line
+interface, focusing on validating specific command-line arguments and their
+effect on the application's configuration and behavior. It uses Typer's
+CliRunner to invoke the CLI and mocks the core pipeline logic to isolate
+the CLI argument parsing and configuration setup.
+
+The main entry point tested is the `app` object from the `cli` module.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from ingenious.services.azure_search.cli import app
 
-runner = CliRunner()
+if TYPE_CHECKING:
+    from pathlib import Path
 
-BASE_ARGS = [
+
+runner: CliRunner = CliRunner()
+
+BASE_ARGS: list[str] = [
     "run",
     "--search-endpoint",
     "https://cli.search.windows.net",
@@ -24,28 +41,48 @@ BASE_ARGS = [
 ]
 
 
-def test_azure_search_cli_load_custom_dat_prompt_file_success(tmp_path):
-    prompt_content = "Custom DAT prompt content."
-    prompt_file = tmp_path / "custom_prompt.txt"
+def test_azure_search_cli_load_custom_dat_prompt_file_success(
+    tmp_path: Path,
+) -> None:
+    """Verify the CLI correctly loads a custom DAT prompt from a specified file.
+
+    This test ensures that when the `--dat-prompt-file` argument is used
+    with a valid file path, the contents of that file are correctly read
+    and passed into the application's configuration.
+    """
+    prompt_content: str = "Custom DAT prompt content."
+    prompt_file: Path = tmp_path / "custom_prompt.txt"
     prompt_file.write_text(prompt_content)
 
     # NOTE: flags BEFORE the query; query LAST and after `--`
-    args = BASE_ARGS + ["--dat-prompt-file", str(prompt_file), "--", "test query"]
+    args: list[str] = BASE_ARGS + [
+        "--dat-prompt-file",
+        str(prompt_file),
+        "--",
+        "test query",
+    ]
 
     mock_run_pipeline = MagicMock()
     with patch(
         "ingenious.services.azure_search.cli._run_search_pipeline", mock_run_pipeline
     ):
-        result = runner.invoke(app, args)
+        result: Result = runner.invoke(app, args)
 
     assert result.exit_code == 0, f"CLI exited with error: {result.output}"
-    config_arg = mock_run_pipeline.call_args[0][0]
+    # The first positional argument passed to the mocked function is the config object.
+    config_arg: Any = mock_run_pipeline.call_args[0][0]
     assert config_arg.dat_prompt == prompt_content
 
 
-def test_azure_search_cli_load_custom_dat_prompt_file_not_found():
+def test_azure_search_cli_load_custom_dat_prompt_file_not_found() -> None:
+    """Verify the CLI exits gracefully if the DAT prompt file is not found.
+
+    This test ensures that if the path provided to `--dat-prompt-file`
+    does not exist, the CLI exits with a non-zero status code and prints
+    an informative error message, without attempting to run the main pipeline.
+    """
     # NOTE: flags BEFORE the query; query LAST and after `--`
-    args = BASE_ARGS + [
+    args: list[str] = BASE_ARGS + [
         "--dat-prompt-file",
         "/non/existent/file.txt",
         "--",
@@ -56,7 +93,7 @@ def test_azure_search_cli_load_custom_dat_prompt_file_not_found():
     with patch(
         "ingenious.services.azure_search.cli._run_search_pipeline", mock_run_pipeline
     ):
-        result = runner.invoke(app, args)
+        result: Result = runner.invoke(app, args)
 
     assert result.exit_code != 0
     assert "Error: DAT prompt file not found" in result.stdout

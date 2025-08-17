@@ -14,20 +14,23 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import Any, Callable, Protocol
+import logging
+from typing import Any, AsyncIterator, Callable, Protocol
 
 from azure.search.documents.models import QueryType
 
 from ingenious.config import IngeniousSettings
 from ingenious.services.azure_search import build_search_pipeline
+from ingenious.services.retrieval.errors import GenerationDisabledError
 
 from .builders import build_search_config_from_settings
 from .client_init import make_search_client
 
+logger = logging.getLogger(__name__)
+
 
 class SearchProvider(Protocol):
-    """
-    Defines the standard interface for a search provider.
+    """Defines the standard interface for a search provider.
 
     This protocol exists to create a stable contract for different search
     implementations (e.g., Azure AI Search, Elasticsearch), allowing callers
@@ -35,8 +38,7 @@ class SearchProvider(Protocol):
     """
 
     async def retrieve(self, query: str, top_k: int = 10) -> list[dict[str, Any]]:
-        """
-        Retrieves a ranked list of source documents for a given query.
+        """Retrieves a ranked list of source documents for a given query.
 
         This method is for fetching relevant "chunks" or documents that can be
         used for context in a RAG system or displayed as search results.
@@ -44,8 +46,7 @@ class SearchProvider(Protocol):
         ...
 
     async def answer(self, query: str) -> dict[str, Any]:
-        """
-        Generates a direct answer to a query using the underlying data.
+        """Generates a direct answer to a query using the underlying data.
 
         This method encapsulates a full RAG (Retrieval-Augmented Generation)
         pipeline, returning a structured answer object.
@@ -53,8 +54,7 @@ class SearchProvider(Protocol):
         ...
 
     async def close(self) -> None:
-        """
-        Closes any open connections or resources.
+        """Closes any open connections or resources.
 
         This ensures graceful shutdown of network clients or other stateful
         resources used by the provider.
@@ -63,23 +63,29 @@ class SearchProvider(Protocol):
 
 
 class AzureSearchProvider:
-    """
-    Unified provider that can return ranked chunks (retrieve) or full RAG answer (answer).
+    """Unified provider for document retrieval and RAG-based answers.
 
     This implementation orchestrates hybrid search and semantic reranking using the
     public Azure SDK, providing a simplified interface for complex search operations.
     It avoids private SDK methods to ensure stability and maintainability.
     """
 
+    _cfg: Any
+    _pipeline: Any
+    _rerank_client: Any
+
     def __init__(
         self, settings: IngeniousSettings, enable_answer_generation: bool | None = None
     ) -> None:
-        """
-        Initializes the Azure Search provider and its components.
+        """Initializes the Azure Search provider and its components.
 
         This constructor sets up the configuration, search pipeline, and a
         separate search client needed for the explicit semantic reranking step,
         all based on the provided application settings.
+
+        Args:
+            settings: The application settings object.
+            enable_answer_generation: Overrides the answer generation setting.
         """
         self._cfg = build_search_config_from_settings(settings)
         # Allow the caller to override generation gating without changing settings schema.
@@ -92,20 +98,34 @@ class AzureSearchProvider:
         self._rerank_client = make_search_client(self._cfg)
 
     async def retrieve(self, query: str, top_k: int = 10) -> list[dict[str, Any]]:
-        """
-        Executes a hybrid search query, fuses results, and applies semantic reranking.
+        """Executes a hybrid search, fuses results, and applies semantic reranking.
 
         This is the main entry point for retrieving documents. It orchestrates
         parallel lexical and vector searches, fuses their results, and if configured,
         performs a final semantic reranking pass to improve relevance. It also handles
         cancellation of concurrent search tasks if one fails.
+
+        Args:
+            query: The user's search query.
+            top_k: The final number of documents to return.
+
+        Returns:
+            A list of cleaned, ranked source documents.
         """
+        k: int = top_k if top_k is not None else self._cfg.top_n_final
+
         # L1 - Create tasks explicitly for proper cancellation handling
-        lex_task = asyncio.create_task(self._pipeline.retriever.search_lexical(query))
-        vec_task = asyncio.create_task(self._pipeline.retriever.search_vector(query))
+        lex_task: asyncio.Task[list[dict[str, Any]]] = asyncio.create_task(
+            self._pipeline.retriever.search_lexical(query)
+        )
+        vec_task: asyncio.Task[list[dict[str, Any]]] = asyncio.create_task(
+            self._pipeline.retriever.search_vector(query)
+        )
 
         try:
             # Use gather with return_exceptions=False (default) to fail fast
+            lex: list[dict[str, Any]]
+            vec: list[dict[str, Any]]
             lex, vec = await asyncio.gather(lex_task, vec_task)
         except Exception:
             # Cancel any pending task when one fails
@@ -126,28 +146,63 @@ class AzureSearchProvider:
                 r["_final_score"] = r.get("_fused_score", 0.0)
             ranked = fused
 
-        return self._clean_sources(ranked[:top_k])
+        return self._clean_sources(ranked[:k])
 
     async def answer(self, query: str) -> dict[str, Any]:
-        """
-        Generates a complete answer by running the full RAG pipeline.
+        """Generates a complete answer via the full RAG pipeline.
 
-        This method delegates directly to the underlying search pipeline's
-        `get_answer` method, which handles the full retrieval, synthesis,
-        and generation process for a comprehensive response.
+        This method executes the entire retrieval and generation pipeline to
+        produce a direct answer to the user's query.
+
+        Args:
+            query: The user's question.
+
+        Returns:
+            A dictionary containing the generated answer and supporting data.
+
+        Raises:
+            GenerationDisabledError: If answer generation is not enabled.
         """
+        # Short-circuit on empty/whitespace-only input
+        if not query or not query.strip():
+            logger.info("Blank query provided; skipping AzureSearchProvider.")
+            return {
+                "answer": "Please enter a question so I can search the knowledge base.",
+                "source_chunks": [],
+            }
+
+        # Fail fast before doing retrieval/DAT to avoid unnecessary cost.
+        if not getattr(self._cfg, "enable_answer_generation", False):
+            raise GenerationDisabledError(
+                detail=(
+                    "answer() requires enable_answer_generation=True. "
+                    "Construct AzureSearchProvider(..., enable_answer_generation=True) "
+                    "or call retrieve() and run your own generator."
+                ),
+                snapshot={
+                    "use_semantic_ranking": self._cfg.use_semantic_ranking,
+                    "top_n_final": self._cfg.top_n_final,
+                },
+            )
         return await self._pipeline.get_answer(query)
 
     async def _semantic_rerank(
         self, query: str, fused_results: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        """
-        Performs a second-stage semantic reranking of fused search results.
+        """Performs a second-stage semantic reranking of fused search results.
 
         This method simulates the L2 reranker by taking the top N fused results,
         re-querying Azure AI Search with a filter for just those document IDs, and
         requesting a semantic-only search. This improves relevance by leveraging
         the semantic reranker on a smaller, high-quality set of candidates.
+
+        Args:
+            query: The user's search query.
+            fused_results: The list of results from the hybrid fusion stage.
+
+        Returns:
+            A reranked list of documents, preserving the order of any documents
+            not included in the reranking pass.
         """
         if not fused_results:
             return []
@@ -175,7 +230,7 @@ class AzureSearchProvider:
         # Join with ' or ' to create the final filter
         filter_query: str = " or ".join(filter_clauses)
 
-        results_iter = await self._rerank_client.search(
+        results_iter: AsyncIterator[dict[str, Any]] = await self._rerank_client.search(
             search_text=query,
             filter=filter_query,
             query_type=QueryType.SEMANTIC,
@@ -209,12 +264,17 @@ class AzureSearchProvider:
         return reranked + remain
 
     def _clean_sources(self, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """
-        Removes internal and temporary fields from result documents.
+        """Removes internal and temporary fields from result documents.
 
         This method exists to present a clean, stable contract to the API consumer,
         stripping away implementation details like intermediate scores, vector data,
         and Azure-specific metadata fields before returning the final results.
+
+        Args:
+            chunks: A list of result documents with internal fields.
+
+        Returns:
+            A cleaned list of result documents.
         """
         cleaned: list[dict[str, Any]] = []
         for c in chunks:
@@ -235,14 +295,13 @@ class AzureSearchProvider:
         return cleaned
 
     async def close(self) -> None:
-        """
-        Closes the underlying search pipeline and reranking client.
+        """Closes the underlying search pipeline and reranking client.
 
         This method ensures that all network connections are gracefully terminated.
         It is designed to be resilient, checking for the existence of `close`
         methods and handling both synchronous and asynchronous versions.
         """
-        # NEW: tolerate both async and sync close()
+        # Tolerate both async and sync close()
         maybe_close: Callable[[], Any] | None = getattr(self._pipeline, "close", None)
         if callable(maybe_close):
             res: Any = maybe_close()

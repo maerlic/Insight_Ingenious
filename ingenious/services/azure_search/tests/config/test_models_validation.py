@@ -1,14 +1,35 @@
-# tests/config/test_models_validation.py
+"""Test configuration model validation for Ingenious settings.
+
+This module contains tests to ensure that the Pydantic models within
+the Ingenious configuration system correctly validate and prioritize
+environment variables. It specifically covers edge cases like mixing
+JSON string configurations with nested environment variables and validates
+constraints on numeric fields like network ports.
+"""
+
+from __future__ import annotations
+
 import json
+from typing import TYPE_CHECKING
 
 import pytest
 
 from ingenious.config.main_settings import IngeniousSettings
 
+if TYPE_CHECKING:
+    from pytest import MonkeyPatch
 
-def test_parse_models_json_and_nested_mix(monkeypatch):
+
+def test_parse_models_json_and_nested_mix(monkeypatch: MonkeyPatch) -> None:
+    """Verify JSON string env var overrides nested model configurations.
+
+    This test ensures that when `INGENIOUS_MODELS` is set as a JSON
+    string, it is parsed and used exclusively, ignoring any conflicting
+    nested environment variables (e.g., `INGENIOUS_MODELS__1__MODEL`).
+    This confirms the intended priority of configuration sources.
+    """
     # Configuration via JSON string should override nested variables
-    models_json = json.dumps(
+    models_json: str = json.dumps(
         [
             {
                 "model": "gpt-4o",
@@ -25,13 +46,20 @@ def test_parse_models_json_and_nested_mix(monkeypatch):
     monkeypatch.setenv("INGENIOUS_MODELS__1__BASE_URL", "https://oai/")
     monkeypatch.setenv("INGENIOUS_MODELS__1__DEPLOYMENT", "embed")
 
-    settings = IngeniousSettings()
+    settings: IngeniousSettings = IngeniousSettings()
     # Expect only the model from the JSON string
     assert len(settings.models) == 1
     assert settings.models[0].deployment == "chat"
 
 
-def test_web_settings_port_range(monkeypatch):
+def test_web_settings_port_range(monkeypatch: MonkeyPatch) -> None:
+    """Test that the web server port is validated to be within the valid range.
+
+    This test checks that the `IngeniousSettings` model raises a `ValueError`
+    if the web configuration port is set to a value outside the standard
+    valid TCP/IP port range (1-65535). It checks both the lower and upper
+    out-of-bounds conditions, as well as a valid port.
+    """
     # minimal valid model
     monkeypatch.setenv("INGENIOUS_MODELS__0__MODEL", "gpt-4o")
     monkeypatch.setenv("INGENIOUS_MODELS__0__API_KEY", "k")
@@ -48,5 +76,5 @@ def test_web_settings_port_range(monkeypatch):
         IngeniousSettings()
 
     monkeypatch.setenv("INGENIOUS_WEB_CONFIGURATION__PORT", "443")
-    s = IngeniousSettings()
+    s: IngeniousSettings = IngeniousSettings()
     assert s.web_configuration.port == 443

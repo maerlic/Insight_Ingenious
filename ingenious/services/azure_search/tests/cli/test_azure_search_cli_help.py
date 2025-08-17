@@ -1,20 +1,41 @@
-# tests/cli/test_azure_search_help.py
+"""Verify CLI help messages for the 'azure-search' command group.
+
+This module contains integration tests that confirm the `azure-search` Typer
+subcommand and its children (like 'run') are correctly registered with the main
+CLI application. It validates that help text (`--help`) is generated correctly
+and includes all expected commands and options. This ensures the CLI remains
+discoverable and self-documenting for end-users.
+"""
+
+from __future__ import annotations
+
 import inspect
 import os
 import re
 import sys
+from typing import TYPE_CHECKING, Any
 
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
+
+if TYPE_CHECKING:
+    from typer import Typer
 
 
 def _collect_cli_debug() -> str:
-    lines = []
+    """Gather extensive debug info about the CLI app state for error reporting.
+
+    This function introspects the application's environment, dependencies, and
+    Typer registration state. It exists to provide rich, actionable context in
+    pytest failure messages, which is crucial for diagnosing complex issues related
+    to command discovery and CLI wiring.
+    """
+    lines: list[str | Any] = []
     lines.append("=== ENV & VERSIONS ===")
     lines.append(f"PYTHONPATH={os.environ.get('PYTHONPATH')}")
     lines.append(f"sys.executable={sys.executable}")
     lines.append(f"sys.path[:5]={sys.path[:5]}")
     try:
-        import click  # type: ignore
+        import click  # type: ignore[import-untyped]
         import typer
 
         lines.append(
@@ -26,14 +47,14 @@ def _collect_cli_debug() -> str:
     # Root app introspection
     lines.append("\n=== ROOT APP INTROSPECTION ===")
     try:
-        from ingenious.cli import main as main_mod  # type: ignore
+        from ingenious.cli import main as main_mod  # type: ignore[import-untyped]
 
         lines.append(
             f"ingenious.cli.main file={inspect.getsourcefile(main_mod) or inspect.getfile(main_mod)}"
         )
-        app = main_mod.app
-        reg_cmds = getattr(app, "registered_commands", None)
-        reg_grps = getattr(app, "registered_groups", None)
+        app: Typer = main_mod.app
+        reg_cmds: list[Any] | None = getattr(app, "registered_commands", None)
+        reg_grps: list[Any] | None = getattr(app, "registered_groups", None)
         if reg_cmds is not None:
             lines.append(
                 f"root.registered_commands={[getattr(c, 'name', '?') for c in reg_cmds]}"
@@ -53,15 +74,17 @@ def _collect_cli_debug() -> str:
     # Azure-search sub-app introspection
     lines.append("\n=== AZURE-SEARCH SUBAPP INTROSPECTION ===")
     try:
-        from ingenious.services.azure_search import cli as az_cli  # type: ignore
+        from ingenious.services.azure_search import (
+            cli as az_cli,  # type: ignore[import-untyped]
+        )
 
-        az_file = inspect.getsourcefile(az_cli) or inspect.getfile(az_cli)
+        az_file: str = inspect.getsourcefile(az_cli) or inspect.getfile(az_cli)
         lines.append(f"ingenious.services.azure_search.cli file={az_file}")
-        az_app = getattr(az_cli, "app", None)
+        az_app: Typer | None = getattr(az_cli, "app", None)
         lines.append(f"azure_search.cli.app exists={bool(az_app)}")
         if az_app is not None:
-            az_cmds = getattr(az_app, "registered_commands", None)
-            az_grps = getattr(az_app, "registered_groups", None)
+            az_cmds: list[Any] | None = getattr(az_app, "registered_commands", None)
+            az_grps: list[Any] | None = getattr(az_app, "registered_groups", None)
             if az_cmds is not None:
                 lines.append(
                     f"azure.registered_commands={[getattr(c, 'name', '?') for c in az_cmds]}"
@@ -76,11 +99,11 @@ def _collect_cli_debug() -> str:
     # Registry introspection (best effort; field names may differ)
     lines.append("\n=== REGISTRY INTROSPECTION ===")
     try:
-        from ingenious.cli import registry as reg_mod  # type: ignore
+        from ingenious.cli import registry as reg_mod  # type: ignore[import-untyped]
 
-        reg_file = inspect.getsourcefile(reg_mod) or inspect.getfile(reg_mod)
+        reg_file: str = inspect.getsourcefile(reg_mod) or inspect.getfile(reg_mod)
         lines.append(f"registry module file={reg_file}")
-        reg_obj = getattr(reg_mod, "registry", None) or getattr(
+        reg_obj: Any = getattr(reg_mod, "registry", None) or getattr(
             reg_mod, "REGISTRY", None
         )
         if reg_obj:
@@ -89,7 +112,8 @@ def _collect_cli_debug() -> str:
                 # Try common internals
                 for key in ("_modules", "_commands", "modules", "commands"):
                     if hasattr(reg_obj, key):
-                        val = getattr(reg_obj, key)
+                        val: Any = getattr(reg_obj, key)
+                        length: int | str
                         try:
                             length = len(val)  # list/dict/set
                         except Exception:
@@ -107,9 +131,9 @@ def _collect_cli_debug() -> str:
     # Help outputs
     lines.append("\n=== HELP OUTPUTS ===")
     try:
-        from ingenious.cli.main import app  # type: ignore
+        from ingenious.cli.main import app  # type: ignore[import-untyped]
 
-        r = CliRunner().invoke(app, ["--help"])
+        r: Result = CliRunner().invoke(app, ["--help"])
         lines.append("--- root --help ---")
         lines.append(r.stdout)
         lines.append(f"exit_code={r.exit_code}")
@@ -117,7 +141,7 @@ def _collect_cli_debug() -> str:
         lines.append(f"root help invoke error: {e!r}")
 
     try:
-        from ingenious.cli.main import app  # type: ignore
+        from ingenious.cli.main import app  # type: ignore[import-untyped]
 
         r = CliRunner().invoke(app, ["azure-search", "run", "--help"])
         lines.append("--- azure-search run --help ---")
@@ -129,16 +153,21 @@ def _collect_cli_debug() -> str:
     return "\n".join(str(x) for x in lines)
 
 
-def test_root_help_shows_azure_search():
-    from ingenious.cli.main import app  # type: ignore
+def test_root_help_shows_azure_search() -> None:
+    """Verify the 'azure-search' command appears in the root --help output.
+
+    This test ensures that the azure-search subcommand is correctly registered
+    with the main Typer application and is therefore discoverable by users.
+    """
+    from ingenious.cli.main import app  # type: ignore[import-untyped]
 
     runner = CliRunner()
-    result = runner.invoke(app, ["--help"])
+    result: Result = runner.invoke(app, ["--help"])
 
     if result.exit_code != 0 or not re.search(r"\bazure-search\b", result.stdout):
         import pytest
 
-        debug = _collect_cli_debug()
+        debug: str = _collect_cli_debug()
         pytest.fail("Expected 'azure-search' in root help.\n\n" + debug)
 
     # still assert to keep coverage accurate if the early fail didn't trigger
@@ -146,13 +175,19 @@ def test_root_help_shows_azure_search():
     assert re.search(r"\bazure-search\b", result.stdout)
 
 
-def test_azure_search_has_run_help():
-    from ingenious.cli.main import app  # type: ignore
+def test_azure_search_has_run_help() -> None:
+    """Verify the 'azure-search run --help' output includes expected flags.
+
+    This test confirms that the 'run' command's parameters are correctly
+    defined and exposed in the help text, ensuring users know what options
+    are available.
+    """
+    from ingenious.cli.main import app  # type: ignore[import-untyped]
 
     runner = CliRunner()
-    result = runner.invoke(app, ["azure-search", "run", "--help"])
+    result: Result = runner.invoke(app, ["azure-search", "run", "--help"])
 
-    flags = [
+    flags: list[str] = [
         "--search-endpoint",
         "--search-key",
         "--search-index-name",
@@ -161,12 +196,12 @@ def test_azure_search_has_run_help():
         "--embedding-deployment",
         "--generation-deployment",
     ]
-    missing = [flag for flag in flags if flag not in result.stdout]
+    missing: list[str] = [flag for flag in flags if flag not in result.stdout]
 
     if result.exit_code != 0 or missing:
         import pytest
 
-        debug = _collect_cli_debug()
+        debug: str = _collect_cli_debug()
         pytest.fail(
             f"'azure-search run --help' missing flags: {missing} "
             f"or bad exit ({result.exit_code}).\n\n{debug}"

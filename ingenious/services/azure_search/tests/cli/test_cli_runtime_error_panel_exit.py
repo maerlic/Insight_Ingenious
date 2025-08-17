@@ -1,13 +1,42 @@
+"""Test the CLI's runtime error handling and user-facing output.
+
+This module verifies that when the command-line interface encounters an unhandled
+exception during its execution, it catches the error and presents a
+user-friendly message to the console. It specifically checks that different
+types of exceptions (both custom HTTP-like errors and generic Python exceptions)
+trigger a consistent error panel and that the application exits with the expected
+status code. This ensures a predictable and helpful user experience on failure.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
-import pytest
+import pytest  # type: ignore[import-untyped]
 from typer.testing import CliRunner
+
+if TYPE_CHECKING:
+    from click.testing import Result
 
 
 class DummyHTTPError(Exception):
-    """Lightweight HTTP-like error with a status code."""
+    """Simulate an HTTP-like error with a status code for testing.
 
-    def __init__(self, status_code=500, message=None):
+    This exception helps create predictable failure scenarios that mimic
+    real-world API or network problems, allowing tests to verify how the
+    application handles specific error status codes.
+    """
+
+    status_code: int
+
+    def __init__(self, status_code: int = 500, message: str | None = None) -> None:
+        """Initialize the dummy error with a status code and message.
+
+        Args:
+            status_code: The HTTP-like status code to simulate.
+            message: An optional error message. If None, a default is generated.
+        """
         super().__init__(message or f"HTTP {status_code}")
         self.status_code = status_code
 
@@ -20,17 +49,20 @@ class DummyHTTPError(Exception):
         Exception("generic boom"),
     ],
 )
-def test_cli_runtime_error_shows_panel_and_exit_1(exc):
-    """
-    Unique coverage:
-      - Non-verbose runtime errors (HTTP-ish or generic) surface a friendly panel,
-        hint about --verbose, and exit with code 0 (current behavior).
+def test_cli_runtime_error_shows_panel_and_exit_1(exc: Exception) -> None:
+    """Verify runtime errors display a friendly panel and exit gracefully.
+
+    This test ensures that non-verbose runtime errors, whether they are
+    custom HTTP-like errors or generic exceptions, surface a helpful error
+    panel to the user. It also confirms the output includes a hint to use
+    the --verbose flag and that the process exits with a code of 0, matching
+    the current, albeit potentially surprising, behavior.
     """
     from ingenious.cli.main import app  # import after CLI wiring
 
-    runner = CliRunner()
+    runner: CliRunner = CliRunner()
 
-    env = {
+    env: dict[str, str] = {
         "AZURE_SEARCH_ENDPOINT": "https://search.example.net",
         "AZURE_SEARCH_KEY": "search-key",
         "AZURE_SEARCH_INDEX_NAME": "my-index",
@@ -39,10 +71,14 @@ def test_cli_runtime_error_shows_panel_and_exit_1(exc):
     }
 
     class PipelineStub:
-        async def get_answer(self, *_a, **_k):
+        """A mock pipeline that raises a predefined exception to test error handling."""
+
+        async def get_answer(self, *_a: Any, **_k: Any) -> Any:
+            """Simulate a pipeline failure by raising the test's exception."""
             raise exc
 
-        async def close(self):  # ensure close() exists; CLI calls it in finally
+        async def close(self) -> None:
+            """Provide a no-op close method to satisfy the CLI's finally block."""
             return None
 
     # Patch the CLI seam, not the underlying implementation modules
@@ -50,7 +86,7 @@ def test_cli_runtime_error_shows_panel_and_exit_1(exc):
         "ingenious.services.azure_search.cli.build_search_pipeline",
         return_value=PipelineStub(),
     ):
-        result = runner.invoke(
+        result: Result = runner.invoke(
             app,
             [
                 "azure-search",
@@ -71,7 +107,7 @@ def test_cli_runtime_error_shows_panel_and_exit_1(exc):
     )
 
     # Output should be a friendly error with a hint about --verbose
-    out = result.stdout.lower()
+    out: str = result.stdout.lower()
     assert "error" in out or "failed" in out, (
         f"No error indication in output:\n{result.stdout}"
     )

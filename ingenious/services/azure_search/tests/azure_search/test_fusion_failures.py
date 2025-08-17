@@ -1,5 +1,19 @@
-# tests/azure_search/test_fusion_failures.py
+"""Test failure modes and edge cases for the DynamicRankFuser.
+
+This module verifies the robustness of the DynamicRankFuser, particularly its
+Dynamic Alpha Tuning (DAT) component. It tests two main failure scenarios:
+1. Exceptions raised by the underlying Language Model (LLM) client during the
+   ranking process.
+2. Malformed or unexpected string outputs from the LLM when parsing relevance scores.
+
+The goal is to ensure the fuser gracefully handles these errors by falling back
+to default, safe values, preventing system crashes and ensuring stable fusion behavior.
+"""
+
+from __future__ import annotations
+
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -26,10 +40,16 @@ from ingenious.services.azure_search.components.fusion import DynamicRankFuser
     ],
 )
 async def test_dat_fusion_llm_failure_falls_back_to_alpha_0_5(
-    mock_search_config, mock_async_openai_client, exception_to_raise
-):
-    """
-    P1: Verify DynamicRankFuser._perform_dat catches LLM exceptions and returns 0.5.
+    mock_search_config: MagicMock,
+    mock_async_openai_client: AsyncMock,
+    exception_to_raise: Exception,
+) -> None:
+    """Verify `_perform_dat` handles LLM exceptions and returns a default alpha.
+
+    This test ensures that if the LLM call fails for any reason (e.g., API
+    error, timeout), the fusion process doesn't crash but instead falls back
+    to a neutral alpha value of 0.5, effectively balancing the lexical and
+    vector search results.
     """
     # Configure the mock LLM client to raise the specified exception
     mock_async_openai_client.chat.completions.create.side_effect = exception_to_raise
@@ -39,12 +59,12 @@ async def test_dat_fusion_llm_failure_falls_back_to_alpha_0_5(
     )
 
     # Prepare dummy inputs
-    query = "test query"
-    top_lexical = {"content": "lexical doc"}
-    top_vector = {"content": "vector doc"}
+    query: str = "test query"
+    top_lexical: dict[str, Any] = {"content": "lexical doc"}
+    top_vector: dict[str, Any] = {"content": "vector doc"}
 
     # Execute the DAT step
-    alpha = await fuser._perform_dat(query, top_lexical, top_vector)
+    alpha: float = await fuser._perform_dat(query, top_lexical, top_vector)
 
     # Assert the fallback value is used
     assert alpha == 0.5
@@ -64,16 +84,20 @@ async def test_dat_fusion_llm_failure_falls_back_to_alpha_0_5(
     ],
 )
 def test_dat_fusion_parse_malformed_scores_falls_back_to_zero(
-    mock_search_config, llm_output, expected_scores
-):
-    """
-    P1: Verify _parse_dat_scores handles various invalid LLM outputs.
+    mock_search_config: MagicMock, llm_output: str, expected_scores: tuple[int, int]
+) -> None:
+    """Verify `_parse_dat_scores` handles malformed LLM output gracefully.
+
+    This test checks that various invalid string formats—such as an incorrect
+    number of scores, out-of-range values, or non-numeric text—are
+    correctly parsed into a default fallback score of (0, 0), preventing
+    errors downstream.
     """
     # Initialize fuser (LLM client not needed for parsing logic)
     fuser = DynamicRankFuser(config=mock_search_config, llm_client=AsyncMock())
 
     # Execute the parsing
-    scores = fuser._parse_dat_scores(llm_output)
+    scores: tuple[int, int] = fuser._parse_dat_scores(llm_output)
 
     # Assert the result
     assert scores == expected_scores

@@ -1,7 +1,20 @@
-# ingenious/services/azure_search/tests/azure_search/test_retries.py
+"""Verify AzureSearchRetriever works with clients that have internal retries.
+
+This module contains unit tests for the AzureSearchRetriever. Its primary purpose
+is to ensure that the retriever operates correctly when the underlying Azure SDK
+clients (for search or embeddings) handle transient errors like HTTP 429
+(Too Many Requests) using their own internal retry mechanisms.
+
+These tests use mock clients (`FlakySearchClient`, `FlakyEmbeddingsClient`) to
+simulate this behavior without making actual network calls. This validates that our
+retriever does not need its own duplicative retry logic for such scenarios.
+"""
+
+from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import Any, Iterator, cast
 
 import pytest
 
@@ -12,17 +25,29 @@ from ingenious.services.azure_search.components.retrieval import AzureSearchRetr
 class _AsyncResults:
     """Mimic the async iterator returned by SearchClient.search()."""
 
-    def __init__(self, docs):
+    _docs: list[dict[str, Any]]
+    _it: Iterator[dict[str, Any]] | None
+
+    def __init__(self, docs: list[dict[str, Any]]) -> None:
+        """Initialize the async iterator with a set of documents.
+
+        Args:
+            docs: A list of document-like dictionaries to be yielded.
+        """
         self._docs = docs
         self._it = None
 
-    def __aiter__(self):
+    def __aiter__(self) -> _AsyncResults:
+        """Return the async iterator object itself."""
         self._it = iter(self._docs)
         return self
 
-    async def __anext__(self):
+    async def __anext__(self) -> dict[str, Any]:
+        """Yield the next document in the iterator."""
         try:
-            return next(self._it)
+            # The iterator is guaranteed to be initialized by `__aiter__`.
+            it = cast(Iterator[dict[str, Any]], self._it)
+            return next(it)
         except StopIteration:
             raise StopAsyncIteration
 
@@ -33,11 +58,16 @@ class FlakySearchClient:
     two 429 "failures" then success — all inside a single .search() call.
     """
 
-    def __init__(self):
+    calls: int
+    attempts: int
+
+    def __init__(self) -> None:
+        """Initialize counters for calls and internal attempts."""
         self.calls = 0  # how many times retriever called .search()
         self.attempts = 0  # internal retry attempts within the client
 
-    async def search(self, *args, **kwargs):
+    async def search(self, *args: Any, **kwargs: Any) -> _AsyncResults:
+        """Simulate a search call that retries twice internally before succeeding."""
         self.calls += 1
         # Simulate the SDK's internal retry loop: 2 failures then success
         for _ in range(3):
@@ -54,15 +84,19 @@ class FlakySearchClient:
 class DummyEmbeddingsClient:
     """Minimal embeddings client (not used by lexical test, but required by ctor)."""
 
-    def __init__(self):
+    embeddings: DummyEmbeddingsClient
+
+    def __init__(self) -> None:
+        """Initialize the client, exposing self via the `embeddings` attribute."""
         self.embeddings = self
 
-    async def create(self, *args, **kwargs):
+    async def create(self, *args: Any, **kwargs: Any) -> SimpleNamespace:
+        """Return a mock successful embedding result."""
         return SimpleNamespace(data=[SimpleNamespace(embedding=[0.0])])
 
 
 @pytest.mark.asyncio
-async def test_retry_on_429_then_success():
+async def test_retry_on_429_then_success() -> None:
     """
     Validates we succeed through the normal call path when the underlying
     client handles transient 429s via its own retry policy.
@@ -73,12 +107,16 @@ async def test_retry_on_429_then_success():
     )
 
     client = FlakySearchClient()
+    # The retriever expects specific client types. We ignore the type mismatch
+    # to inject our mock client for this unit test.
     r = AzureSearchRetriever(
-        config=cfg, search_client=client, embedding_client=DummyEmbeddingsClient()
+        config=cfg,
+        search_client=client,  # type: ignore[arg-type]
+        embedding_client=DummyEmbeddingsClient(),  # type: ignore[arg-type]
     )
 
     # NOTE: search_lexical only takes (query), top_k is read from config
-    docs = await r.search_lexical("hello")
+    docs: list[dict[str, Any]] = await r.search_lexical("hello")
 
     # Retriever should call the client's .search() exactly once,
     # while the client itself performed 3 internal attempts.
@@ -93,11 +131,16 @@ class FlakyEmbeddingsClient:
     two transient failures then success within a single .create() call.
     """
 
-    def __init__(self):
+    attempts: int
+    embeddings: FlakyEmbeddingsClient
+
+    def __init__(self) -> None:
+        """Initialize attempt counter and expose self via `embeddings` attribute."""
         self.attempts = 0
         self.embeddings = self  # expose .create via 'embeddings' attribute
 
-    async def create(self, *args, **kwargs):
+    async def create(self, *args: Any, **kwargs: Any) -> SimpleNamespace:
+        """Simulate an embedding call that retries twice internally before succeeding."""
         # Simulate internal retry loop
         for _ in range(3):
             self.attempts += 1
@@ -111,12 +154,13 @@ class FlakyEmbeddingsClient:
 class NoopSearchClient:
     """A search client we won't actually use for this test."""
 
-    async def search(self, *args, **kwargs):
+    async def search(self, *args: Any, **kwargs: Any) -> _AsyncResults:
+        """Return an empty search result without performing any action."""
         return _AsyncResults([])
 
 
 @pytest.mark.asyncio
-async def test_vector_embed_429_fallback_or_retry():
+async def test_vector_embed_429_fallback_or_retry() -> None:
     """
     Embedding call should succeed even if the client had to retry internally.
     Validates we propagate our retry-configured client through the call path.
@@ -127,11 +171,16 @@ async def test_vector_embed_429_fallback_or_retry():
     )
 
     aoai = FlakyEmbeddingsClient()
+    # The retriever expects specific client types. We ignore the type mismatch
+    # to inject our mock clients for this unit test.
     r = AzureSearchRetriever(
-        config=cfg, search_client=NoopSearchClient(), embedding_client=aoai
+        config=cfg,
+        search_client=NoopSearchClient(),  # type: ignore[arg-type]
+        embedding_client=aoai,  # type: ignore[arg-type]
     )
 
-    vec = await r._generate_embedding("hello")  # protected method ok for unit scope
+    # Accessing a protected method is acceptable for this focused unit test.
+    vec: list[float] = await r._generate_embedding("hello")
 
     assert isinstance(vec, (list, tuple)), "Expected embedding vector returned"
     assert aoai.attempts == 3, (

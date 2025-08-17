@@ -300,7 +300,7 @@ def _pick_models(settings: IngeniousSettings) -> Tuple[str, str, str, str, str]:
 
     Returns:
         A tuple of (openai_endpoint, openai_key, openai_version,
-                     embedding_deployment, generation_deployment).
+                 embedding_deployment, generation_deployment).
 
     Raises:
         ConfigError: If any part of the model configuration is invalid or

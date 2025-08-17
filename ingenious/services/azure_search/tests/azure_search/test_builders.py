@@ -1,20 +1,20 @@
 # -- coding: utf-8 --
+"""Tests the Azure Search configuration builder functions.
 
+This module provides unit tests for the configuration builders responsible
+for creating an Azure Search client configuration from the application's main
+settings. It ensures that required fields are validated, settings are mapped
+correctly, and that the model selection logic (for embedding and generation)
+behaves as expected.
+
+The main functions tested are `build_search_config_from_settings` and the
+internal helper `_pick_models`.
 """
-FILE TEST PLAN
 
-    build_search_config_from_settings:
-        maps fields from IngeniousSettings → SearchConfig
-        validates missing azure_search_services[0], endpoint/key/index_name
-        integrates _pick_models() result into SearchConfig (embedding/gen deployments + openai details)
-
-    _pick_models:
-        selection heuristics (embedding vs generation)
-        requires deployment names for both
-        warning path when single model reused
-"""
+from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -26,16 +26,32 @@ from ingenious.services.azure_search.builders import (
     build_search_config_from_settings,
 )
 
+if TYPE_CHECKING:
+    from pytest import LogCaptureFixture, MonkeyPatch
 
-def _settings(models, azure):
+
+def _settings(
+    models: list[ModelSettings] | None, azure: AzureSearchSettings | None
+) -> IngeniousSettings:
+    """Construct a minimal IngeniousSettings object for testing.
+
+    This helper function simplifies test setup by creating a settings object
+    with only the model and Azure Search service configurations populated.
+    """
     s = IngeniousSettings.model_construct()
     s.models = models
     s.azure_search_services = [azure] if azure else None
     return s
 
 
-def test_build_search_config_maps_and_validates(monkeypatch):
-    models = [
+def test_build_search_config_maps_and_validates(monkeypatch: MonkeyPatch) -> None:
+    """Verify settings are correctly mapped to SearchConfig on the happy path.
+
+    This test ensures that when valid settings for both models and Azure Search
+    are provided, they are correctly translated into the `SearchConfig` data
+    structure used by the search service client.
+    """
+    models: list[ModelSettings] = [
         ModelSettings(
             model="text-embedding-3-small",
             deployment="embed",
@@ -63,11 +79,20 @@ def test_build_search_config_maps_and_validates(monkeypatch):
     assert cfg.embedding_deployment_name == "embed"
     assert cfg.generation_deployment_name == "chat"
     assert cfg.openai_endpoint == "https://oai"
-    assert cfg.openai_key.get_secret_value() in {"K2", "K1"}  # chosen from gen then emb
+    assert cfg.openai_key.get_secret_value() in {
+        "K2",
+        "K1",
+    }  # chosen from gen then emb
 
 
-def test_build_search_config_errors():
-    models = [
+def test_build_search_config_errors() -> None:
+    """Verify that ConfigError is raised for missing or invalid settings.
+
+    This test confirms that the configuration builder performs essential
+    validation, raising an error if the Azure Search service block is missing
+    or if critical fields like endpoint, key, or index name are empty.
+    """
+    models: list[ModelSettings] = [
         ModelSettings(
             model="gpt-4o", deployment="chat", api_key="k", base_url="https://o"
         )
@@ -86,9 +111,18 @@ def test_build_search_config_errors():
         build_search_config_from_settings(_settings(models, azure2))
 
 
-def test_pick_models_selection_and_require_deployments(caplog):
+def test_pick_models_selection_and_require_deployments(
+    caplog: LogCaptureFixture,
+) -> None:
+    """Test model selection logic, deployment requirements, and warnings.
+
+    This test case validates the behavior of the `_pick_models` helper. It ensures
+    that the function raises a `ConfigError` if a model is missing a required
+    deployment name and that it logs a warning if a single model is being
+    reused for both embedding and generation roles.
+    """
     caplog.set_level(logging.WARNING)
-    models = [
+    models: list[ModelSettings] = [
         ModelSettings(
             model="text-embedding-3-small",
             deployment="emb",
@@ -96,10 +130,8 @@ def test_pick_models_selection_and_require_deployments(caplog):
             base_url="https://o",
         ),
     ]
-    # Only one model present: should warn and reuse
+    # It should fail if a model is found for a role but lacks a deployment name.
     with pytest.raises(ConfigError):
-        # deployment present but need both emb/gen (same), still valid deployments but function allows; however ensure
-        # if we strip deployment it fails:
         _pick_models(
             _settings(
                 [
@@ -112,7 +144,8 @@ def test_pick_models_selection_and_require_deployments(caplog):
                 ),
             )
         )
-    # Single model with deployment for both roles should warn during selection path
+    # Single model with a deployment name should be selected for both roles,
+    # but it should trigger a warning.
     _ = _pick_models(
         _settings(
             models,

@@ -1,14 +1,32 @@
-# tests/config/test_main_settings.py
+"""Test the main application settings model for Ingenious.
+
+This module contains unit tests for the IngeniousSettings Pydantic model,
+ensuring that configuration can be loaded correctly from various environment
+variable formats (JSON strings, nested variables) and that validation
+rules for models, services, and other parameters are properly enforced.
+"""
+
+from __future__ import annotations
+
 import json
+from typing import TYPE_CHECKING
 
 import pytest
 
 from ingenious.config.main_settings import IngeniousSettings
 
+if TYPE_CHECKING:
+    from pytest import MonkeyPatch
 
-def test_models_and_azure_search_from_json_env(monkeypatch):
+
+def test_models_and_azure_search_from_json_env(monkeypatch: MonkeyPatch) -> None:
+    """Test that settings load correctly from JSON-encoded environment variables.
+
+    This ensures that Pydantic's JSON decoding for complex fields works as
+    expected for both the models and Azure search service configurations.
+    """
     # Provide models via JSON string
-    models_json = json.dumps(
+    models_json: str = json.dumps(
         [
             {
                 "model": "gpt-4o",
@@ -26,7 +44,7 @@ def test_models_and_azure_search_from_json_env(monkeypatch):
             },
         ]
     )
-    azure_json = json.dumps(
+    azure_json: str = json.dumps(
         [
             {
                 "service": "svc",
@@ -51,7 +69,12 @@ def test_models_and_azure_search_from_json_env(monkeypatch):
     assert settings.azure_search_services[0].top_k_retrieval == 15
 
 
-def test_models_and_azure_search_from_nested_env(monkeypatch):
+def test_models_and_azure_search_from_nested_env(monkeypatch: MonkeyPatch) -> None:
+    """Test that settings load correctly from nested environment variables.
+
+    This verifies that Pydantic's nested environment variable parsing
+    (using "__" as a separator) works for lists of complex objects.
+    """
     # Nested env for models
     monkeypatch.setenv("INGENIOUS_MODELS__0__MODEL", "gpt-4o")
     monkeypatch.setenv("INGENIOUS_MODELS__0__API_KEY", "k")
@@ -78,7 +101,12 @@ def test_models_and_azure_search_from_nested_env(monkeypatch):
     assert settings.azure_search_services[0].top_k_retrieval == 25
 
 
-def test_invalid_port_and_log_level(monkeypatch):
+def test_invalid_port_and_log_level(monkeypatch: MonkeyPatch) -> None:
+    """Test that invalid port and log level values raise ValueErrors.
+
+    This ensures that the validators on simple fields like port numbers and
+    log levels are triggered correctly during settings instantiation.
+    """
     # minimal valid model
     monkeypatch.setenv("INGENIOUS_MODELS__0__MODEL", "gpt-4o")
     monkeypatch.setenv("INGENIOUS_MODELS__0__API_KEY", "k")
@@ -97,13 +125,26 @@ def test_invalid_port_and_log_level(monkeypatch):
         IngeniousSettings()
 
 
-def test_empty_models_rejected(monkeypatch):
+def test_empty_models_rejected(monkeypatch: MonkeyPatch) -> None:
+    """Test that configuration fails validation if no models are provided.
+
+    The `models` field is non-optional and must contain at least one entry,
+    so this test verifies that a missing environment variable causes a
+    validation error as expected.
+    """
     # No models env at all -> validator should reject
     with pytest.raises(Exception):
         IngeniousSettings()
 
 
-def test_model_auth_validations_token_requires_api_key(monkeypatch):
+def test_model_auth_validations_token_requires_api_key(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Test that 'token' auth method requires an API key.
+
+    Verifies the custom validator that ensures if authentication_method is
+    'token', the 'api_key' field must also be provided.
+    """
     monkeypatch.setenv("INGENIOUS_MODELS__0__MODEL", "gpt-4o")
     monkeypatch.setenv("INGENIOUS_MODELS__0__BASE_URL", "https://oai/")
     monkeypatch.setenv("INGENIOUS_MODELS__0__DEPLOYMENT", "chat")
@@ -113,7 +154,15 @@ def test_model_auth_validations_token_requires_api_key(monkeypatch):
         IngeniousSettings()
 
 
-def test_model_auth_client_credentials_require_fields(monkeypatch):
+def test_model_auth_client_credentials_require_fields(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Test 'client_id_and_secret' auth requires necessary fields.
+
+    This test confirms the validation logic for Azure client credential flow,
+    ensuring that client_id, client_secret, and tenant_id (either directly or
+    via the AZURE_TENANT_ID fallback) are all present.
+    """
     # Succeeds when client_id/secret & tenant provided (via env var or field)
     monkeypatch.setenv("INGENIOUS_MODELS__0__MODEL", "gpt-4o")
     monkeypatch.setenv("INGENIOUS_MODELS__0__BASE_URL", "https://oai/")

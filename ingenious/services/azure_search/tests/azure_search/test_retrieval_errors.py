@@ -1,4 +1,19 @@
+"""Verify exception handling for the AzureSearchRetriever.
+
+This module contains tests to ensure that the AzureSearchRetriever component
+correctly propagates exceptions that occur within its dependencies, namely the
+Azure Cognitive Search client and the OpenAI embeddings client. The goal is to
+confirm that failures in these external services are not silently swallowed but
+are instead surfaced to the caller, allowing for proper error handling upstream.
+
+Tests cover both lexical and vector search paths and simulate various non-transient
+API errors, network issues, and authentication failures.
+"""
+
+from __future__ import annotations
+
 import asyncio
+from typing import Type
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -9,9 +24,13 @@ try:
 except ImportError:
     # Define dummy exceptions if azure-core is not installed
     class ResourceNotFoundError(Exception):
+        """Dummy exception for ResourceNotFoundError."""
+
         pass
 
     class HttpResponseError(Exception):
+        """Dummy exception for HttpResponseError."""
+
         pass
 
 
@@ -21,15 +40,24 @@ try:
 except ImportError:
     # Define dummy exception classes if openai library is not installed
     class AuthenticationError(Exception):
-        def __init__(self, message, *args, **kwargs):
+        """Dummy exception for AuthenticationError."""
+
+        def __init__(self, message: str, *args: object, **kwargs: object) -> None:
+            """Initialize the dummy exception."""
             super().__init__(message)
 
     class APIConnectionError(Exception):
-        def __init__(self, *args, **kwargs):
+        """Dummy exception for APIConnectionError."""
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            """Initialize the dummy exception."""
             super().__init__("API Connection Error")
 
     class BadRequestError(Exception):
-        def __init__(self, message, *args, **kwargs):
+        """Dummy exception for BadRequestError."""
+
+        def __init__(self, message: str, *args: object, **kwargs: object) -> None:
+            """Initialize the dummy exception."""
             super().__init__(message)
 
 
@@ -48,11 +76,16 @@ from ingenious.services.azure_search.config import SearchConfig
     ],
 )
 async def test_retrieval_handles_azure_search_api_errors(
-    config: SearchConfig, exception_to_raise, expected_exception
-):
-    """
-    Verify that AzureSearchRetriever propagates non-transient exceptions from the
-    Azure Search client during both lexical and vector search paths.
+    config: SearchConfig,
+    exception_to_raise: Exception,
+    expected_exception: Type[Exception],
+) -> None:
+    """Test that Azure Search client exceptions are propagated correctly.
+
+    This test verifies that when the underlying Azure Cognitive Search client
+    raises an exception (e.g., for a missing index, bad request, or network issue),
+    the AzureSearchRetriever allows the exception to propagate. This ensures that
+    callers are notified of failures during both lexical and vector search operations.
     """
     # Setup: Mock clients
     mock_search_client = MagicMock()
@@ -102,11 +135,16 @@ async def test_retrieval_handles_azure_search_api_errors(
     ],
 )
 async def test_retrieval_handles_openai_embedding_errors(
-    config: SearchConfig, exception_to_raise, expected_exception
-):
-    """
-    Verify that AzureSearchRetriever.search_vector propagates exceptions raised
-    during the OpenAI embedding generation step (_generate_embedding).
+    config: SearchConfig,
+    exception_to_raise: Exception,
+    expected_exception: Type[Exception],
+) -> None:
+    """Test that OpenAI embedding client exceptions are propagated correctly.
+
+    This test ensures that exceptions raised by the OpenAI client during the
+    embedding generation step of a vector search are properly propagated. This
+    confirms that failures like authentication errors, timeouts, or token limits
+    are surfaced to the caller instead of being suppressed.
     """
     # Setup: Mock clients
     mock_search_client = MagicMock()  # Should not be called if embedding fails

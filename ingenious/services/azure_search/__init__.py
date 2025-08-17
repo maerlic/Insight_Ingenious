@@ -2,6 +2,8 @@
 
 from typing import TYPE_CHECKING, Any
 
+from ingenious.services.retrieval.errors import GenerationDisabledError  # noqa: F401
+
 # Export the light model directly – safe to import anytime
 from .config import SearchConfig  # noqa: F401
 
@@ -21,4 +23,9 @@ if TYPE_CHECKING:
     # Only for type checkers; doesn't run at runtime
     from .components.pipeline import AdvancedSearchPipeline  # noqa: F401
 
-__all__ = ["SearchConfig", "build_search_pipeline", "AdvancedSearchPipeline"]
+__all__ = [
+    "SearchConfig",
+    "build_search_pipeline",
+    "AdvancedSearchPipeline",
+    "GenerationDisabledError",
+]

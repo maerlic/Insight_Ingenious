@@ -1,12 +1,28 @@
-# ingenious/services/azure_search/tests/cli/test_azure_search_cli_behavior.py
+"""Tests the behavior of the Azure Search CLI command.
+
+This module contains integration-style tests for the command-line interface
+of the Azure Search service. It focuses on validating the CLI's direct
+responsibilities, such as argument parsing, error handling, and environment
+setup (like logging), rather than the full search pipeline execution.
+These tests mock the underlying pipeline to remain fast and offline.
+"""
+
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 from typer.testing import CliRunner
 
+if TYPE_CHECKING:
+    from click.testing import Result
 
-def _base_env():
-    # Minimal env so SearchConfig validation passes and we hit the CLI code paths
+
+def _base_env() -> dict[str, str]:
+    """Provide minimal environment variables for SearchConfig validation."""
+    # This ensures that the configuration loading part of the CLI passes,
+    # allowing tests to focus on the CLI's own logic and error handling.
     return {
         "AZURE_SEARCH_ENDPOINT": "https://search.example.net",
         "AZURE_SEARCH_KEY": "search-key",
@@ -16,8 +32,11 @@ def _base_env():
     }
 
 
-def _base_args(verbose: bool = False):
-    args = [
+def _base_args(verbose: bool = False) -> list[str]:
+    """Create a base list of command-line arguments for the 'run' command."""
+    # This helper provides a consistent set of arguments for invoking the CLI,
+    # making tests easier to read and maintain.
+    args: list[str] = [
         "azure-search",
         "run",
         "test query",
@@ -33,22 +52,21 @@ def _base_args(verbose: bool = False):
     return args
 
 
-def test_cli_missing_semantic_name_exits_1():
-    """
-    With --semantic-ranking enabled and no --semantic-config-name, the pipeline
-    builder should raise, and the CLI must exit(1) with an error panel message.
-    We patch the CLI's build_search_pipeline shim to raise ValueError to assert
-    the CLI's error handling path and messaging.
-    """
+def test_cli_missing_semantic_name_exits_1() -> None:
+    """Verify CLI exits with code 1 if semantic config name is missing."""
+    # With --semantic-ranking enabled and no --semantic-config-name, the pipeline
+    # builder should raise ValueError. This test ensures the CLI catches this
+    # specific configuration error and provides a clear message to the user before
+    # exiting with a non-zero status code.
     # Import root app only after the CLI tree has registered subcommands
-    from ingenious.cli.main import app  # type: ignore
+    from ingenious.cli.main import app  # type: ignore[import-untyped]
 
     # Patch the shim in the CLI module (not the underlying implementation)
     with patch(
         "ingenious.services.azure_search.cli.build_search_pipeline",
         side_effect=ValueError("semantic configuration name required"),
     ):
-        result = CliRunner().invoke(app, _base_args(), env=_base_env())
+        result: Result = CliRunner().invoke(app, _base_args(), env=_base_env())
 
     assert result.exit_code == 1
     # The CLI prints a Rich Panel with this prefix when ValueError bubbles up
@@ -56,18 +74,21 @@ def test_cli_missing_semantic_name_exits_1():
     assert "semantic configuration name required" in result.stdout
 
 
-def test_cli_verbose_sets_component_loggers():
-    """
-    --verbose should set the Azure Search component loggers to DEBUG.
-    We no-op the actual execution shim so the test stays fully offline.
-    """
-    from ingenious.cli.main import app  # type: ignore
+def test_cli_verbose_sets_component_loggers() -> None:
+    """Verify --verbose flag sets component loggers to DEBUG level."""
+    # The CLI is responsible for configuring logging verbosity. This test
+    # confirms that passing the --verbose flag correctly cascades the DEBUG
+    # log level to all relevant sub-component loggers, aiding in debugging.
+    # The actual pipeline execution is patched to isolate the logging setup logic.
+    from ingenious.cli.main import app  # type: ignore[import-untyped]
 
     # Bring the CLI module in to access its __name__ for the logger list
-    from ingenious.services.azure_search import cli as az_cli  # type: ignore
+    from ingenious.services.azure_search import (
+        cli as az_cli,  # type: ignore[import-untyped]
+    )
 
     # These are the logger names the CLI configures in setup_logging(verbose)
-    logger_names = [
+    logger_names: list[str] = [
         "ingenious.services.azure_search.pipeline",
         "ingenious.services.azure_search.components.retrieval",
         "ingenious.services.azure_search.components.fusion",
@@ -84,7 +105,9 @@ def test_cli_verbose_sets_component_loggers():
     with patch(
         "ingenious.services.azure_search.cli._run_search_pipeline", return_value=None
     ):
-        result = CliRunner().invoke(app, _base_args(verbose=True), env=_base_env())
+        result: Result = CliRunner().invoke(
+            app, _base_args(verbose=True), env=_base_env()
+        )
 
     assert result.exit_code == 0
 

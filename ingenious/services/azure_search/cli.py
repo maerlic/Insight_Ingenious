@@ -1,3 +1,16 @@
+"""Provides a CLI for the Advanced Azure AI Search service.
+
+This module uses Typer to create a command-line interface for a multi-stage
+search pipeline. It allows users to execute complex search queries against an
+Azure AI Search index, leveraging features like retrieval, result fusion (DAT),
+semantic reranking, and generative answering (RAG).
+
+The main entry point is the `run` command, which accepts various configuration
+options via command-line flags or environment variables. To simplify usage,
+the CLI defaults to the `run` command, allowing users to pass a query
+directly (e.g., `azure-search "my query"`).
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -20,6 +33,11 @@ _build_pipeline_impl: Optional[Callable[..., Any]] = None
 
 
 def _get_build_pipeline_impl() -> Callable[..., Any]:
+    """Lazily import and return the pipeline factory function.
+
+    This avoids the high import cost of the full pipeline stack
+    (e.g., torch, transformers) when the user is just asking for --help.
+    """
     global _build_pipeline_impl
     if _build_pipeline_impl is None:
         from .components.pipeline import build_search_pipeline as _impl
@@ -30,20 +48,34 @@ def _get_build_pipeline_impl() -> Callable[..., Any]:
 
 # Test‑patchable shim (the tests patch CLI_MOD.build_search_pipeline)
 def build_search_pipeline(*args: Any, **kwargs: Any) -> Any:
+    """Provide a test-patchable shim for the pipeline factory.
+
+    This function acts as an indirection layer, allowing tests to easily
+    mock the pipeline construction process without interfering with the
+    lazy-loading mechanism.
+    """
     return _get_build_pipeline_impl()(*args, **kwargs)
 
 
 # ── TyperGroup that safely forwards to the default "run" command ─────────────
 class DefaultToRunTyperGroup(TyperGroup):
-    """
-    A TyperGroup that forwards to 'run' when:
-      • No subcommand is given (behaves like 'run' with zero args → Click shows missing QUERY)
-      • The first token isn't a known subcommand (treat it as QUERY to 'run')
+    """A TyperGroup that forwards to the 'run' command by default.
 
-    Preserves normal behavior for explicit 'run', '--help', etc.
+    This custom group enhances the user experience by allowing a query
+    to be passed directly to the application, which then invokes the 'run'
+    subcommand implicitly. It preserves standard behavior for explicit
+    subcommands like 'run' or global options like '--help'.
     """
 
-    def resolve_command(self, ctx: click.Context, args: List[str]):
+    def resolve_command(
+        self, ctx: click.Context, args: List[str]
+    ) -> tuple[str | None, click.Command | None, list[str]]:
+        """Resolve the command, defaulting to 'run' if no subcommand is found.
+
+        The logic first checks for explicit subcommands or group-level options.
+        If none are present, it retrieves the 'run' command and passes the
+        arguments to it. This makes the 'run' command the default action.
+        """
         # If the first token is a group option (e.g., --help), let the group handle it.
         if args and args[0].startswith("-"):
             return super().resolve_command(ctx, args)
@@ -84,6 +116,12 @@ logging.basicConfig(level=logging.WARNING)
 
 # Helper to set logging levels for the service components
 def setup_logging(verbose: bool) -> None:
+    """Configure logging levels for the application components.
+
+    This function sets the log level to DEBUG if verbose mode is enabled,
+    or INFO otherwise, for key modules within the search service. This
+    allows for controlled output during execution.
+    """
     level = logging.DEBUG if verbose else logging.INFO
 
     # List of loggers used in the service (adjust based on actual logger names if needed)
@@ -107,10 +145,16 @@ def setup_logging(verbose: bool) -> None:
 
 
 def _run_search_pipeline(config: SearchConfig, query: str, verbose: bool) -> None:
-    """Helper function to manage the asyncio event loop and run the pipeline."""
+    """Set up the asyncio event loop and execute the search pipeline.
+
+    This helper encapsulates the asynchronous execution logic. It creates and
+    runs an asyncio event loop to manage the pipeline's async operations,
+    ensuring proper resource initialization and cleanup.
+    """
 
     async def _async_run() -> None:
-        pipeline = None
+        """Build, run, and clean up the search pipeline asynchronously."""
+        pipeline: Any = None
         try:
             # Build the pipeline using the factory
             pipeline = build_search_pipeline(config)
@@ -119,6 +163,7 @@ def _run_search_pipeline(config: SearchConfig, query: str, verbose: bool) -> Non
             console.print("Executing Advanced Search Pipeline", markup=False)
 
             # Execute the pipeline
+            result: dict[str, Any]
             with console.status(
                 "[bold green]Executing Advanced Search Pipeline (L1 -> DAT -> L2 -> RAG)...",
                 spinner="dots",
@@ -126,8 +171,8 @@ def _run_search_pipeline(config: SearchConfig, query: str, verbose: bool) -> Non
                 result = await pipeline.get_answer(query)
 
             # Display Results
-            answer = result.get("answer", "No answer generated.")
-            sources = result.get("source_chunks", [])
+            answer: str = result.get("answer", "No answer generated.")
+            sources: list[dict[str, Any]] = result.get("source_chunks", [])
 
             console.print(
                 Panel(
@@ -140,8 +185,8 @@ def _run_search_pipeline(config: SearchConfig, query: str, verbose: bool) -> Non
             # Display Sources
             console.print(f"\n[bold]Sources Used ({len(sources)}):[/bold]")
             for i, source in enumerate(sources):
-                score = source.get("_final_score", "N/A")
-                content_sample = source.get(config.content_field, "")[:250] + "..."
+                score: float | str = source.get("_final_score", "N/A")
+                content_sample: str = source.get(config.content_field, "")[:250] + "..."
 
                 score_display = (
                     f"{score:.4f}" if isinstance(score, float) else str(score)
@@ -190,8 +235,11 @@ def _run_search_pipeline(config: SearchConfig, query: str, verbose: bool) -> Non
 # Keep a minimal callback so `azure-search --help` prints group help
 @app.callback()
 def _callback() -> None:
-    """
-    Ingenious Advanced Azure AI Search service CLI.
+    """Provide the main entry point for the Typer application group.
+
+    This callback ensures that the group-level help message is displayed
+    correctly. The logic for defaulting to the 'run' command is handled
+    by the custom DefaultToRunTyperGroup class.
     """
     # Default-to-run is implemented in DefaultToRunTyperGroup.resolve_command
     return None
@@ -221,7 +269,7 @@ def run_search(
         prompt=True,
         hide_input=True,
     ),
-    search_index_name: Optional[str] = typer.Option(
+    search_index_name: str | None = typer.Option(
         None,
         "--search-index-name",
         "-si",
@@ -272,7 +320,7 @@ def run_search(
         "--semantic-ranking/--no-semantic-ranking",
         help="Enable/Disable Azure Semantic Ranking (L2).",
     ),
-    semantic_config_name: Optional[str] = typer.Option(
+    semantic_config_name: str | None = typer.Option(
         None,
         "--semantic-config",
         "-sc",
@@ -291,7 +339,7 @@ def run_search(
         "-ov",
         help="Azure OpenAI API Version.",
     ),
-    dat_prompt_file: Optional[str] = typer.Option(
+    dat_prompt_file: str | None = typer.Option(
         None,
         "--dat-prompt-file",
         "-dp",
@@ -312,8 +360,13 @@ def run_search(
     # ── Positional query (must be last when invoking) ─────────────────────────
     query: str = typer.Argument(..., help="The search query string."),
 ) -> None:
-    """
-    Execute the advanced multi-stage AI search pipeline (Retrieve -> DAT Fuse -> Semantic Rerank -> Generate).
+    """Execute the advanced AI search pipeline.
+
+    This command orchestrates the full search process: retrieval, Dynamic
+    Alternating Transformation (DAT) for query fusion, semantic reranking,
+    and final answer generation. It gathers all necessary configuration
+    from command-line options or environment variables, validates them, and
+    initiates the pipeline execution.
     """
     setup_logging(verbose)
 
@@ -328,7 +381,7 @@ def run_search(
         raise typer.Exit(code=1)
 
     # Handle DAT prompt loading
-    dat_prompt = DEFAULT_DAT_PROMPT
+    dat_prompt: str = DEFAULT_DAT_PROMPT
     if dat_prompt_file:
         try:
             with open(dat_prompt_file, "r") as f:

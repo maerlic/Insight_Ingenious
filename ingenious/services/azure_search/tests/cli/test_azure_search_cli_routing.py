@@ -1,17 +1,39 @@
-# tests/cli/test_azure_search_routing.py
+"""Test the `azure-search` CLI command routing and configuration building.
+
+This module contains integration tests for the `azure-search` command group
+in the main CLI application. It verifies that command-line arguments and
+environment variables are correctly parsed and passed to the underlying
+service-layer functions. It focuses on the "glue" code rather than the
+business logic of the search pipeline itself, which is tested elsewhere.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 from typer.testing import CliRunner
 
+if TYPE_CHECKING:
+    from pytest import MonkeyPatch
+
 CLI_MOD = "ingenious.services.azure_search.cli"
 
 
-def test_azure_search_run_routes_and_builds_config(monkeypatch):
+def test_azure_search_run_routes_and_builds_config(monkeypatch: MonkeyPatch) -> None:
+    """Verify `azure-search run` correctly builds config and calls the pipeline.
+
+    This test ensures that the Typer command correctly gathers configuration
+    from both environment variables (for secrets and endpoints) and command-line
+    arguments (for operational parameters), constructs the `SearchConfig`
+    pydantic model, and invokes the underlying `_run_search_pipeline` function
+    with the expected arguments.
+    """
     from ingenious.cli.main import app  # imports must occur after code wiring
 
-    runner = CliRunner()
+    runner: CliRunner = CliRunner()
 
-    env = {
+    env: dict[str, str] = {
         "AZURE_SEARCH_ENDPOINT": "https://x.search.windows.net",
         "AZURE_SEARCH_KEY": "sk",
         "AZURE_SEARCH_INDEX_NAME": "idx",
@@ -21,7 +43,7 @@ def test_azure_search_run_routes_and_builds_config(monkeypatch):
     }
 
     # We must still pass deployments to avoid prompts.
-    args = [
+    args: list[str] = [
         "azure-search",
         "run",
         "hello world",

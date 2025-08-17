@@ -1,3 +1,17 @@
+"""Defines the configuration model for an advanced search pipeline.
+
+This module provides a Pydantic-based configuration class, `SearchConfig`,
+to centralize all settings for a Retrieval-Augmented Generation (RAG) system
+that uses Azure AI Search and Azure OpenAI. It ensures that all necessary
+parameters—such as API endpoints, keys, model names, and pipeline behavior
+(e.g., Dynamic Alpha Tuning)—are provided and validated at startup.
+
+The primary entry point is the `SearchConfig` class, which should be
+instantiated to configure the search service.
+"""
+
+from __future__ import annotations
+
 from typing import Optional
 
 from pydantic import BaseModel, Field, SecretStr
@@ -5,7 +19,7 @@ from pydantic import BaseModel, Field, SecretStr
 # Default prompt for Dynamic Alpha Tuning (DAT)
 # Adapted from the methodology described in "DAT: Dynamic Alpha Tuning for Hybrid Retrieval in RAG" (Hsu & Tzeng, 2025), specifically Appendix A.
 # This prompt asks the LLM to evaluate the retrieval effectiveness (likelihood of finding the answer nearby) of the top-1 results.
-DEFAULT_DAT_PROMPT = """
+DEFAULT_DAT_PROMPT: str = """
 System:
 You are an evaluator assessing the retrieval effectiveness of Dense Retrieval (Vector/Semantic) and Sparse Retrieval (BM25/Keyword).
 
@@ -38,9 +52,12 @@ Respond ONLY with two integers separated by a single space. Do not include any o
 
 
 class SearchConfig(BaseModel):
-    """
-    Configuration model for the Advanced Azure AI Search service.
-    Defines connections to Azure services and pipeline behavior parameters.
+    """Configuration model for the Advanced Azure AI Search service.
+
+    This class uses Pydantic to define and validate all connection settings
+    for Azure services and behavior parameters for the search pipeline. It
+    serves as a single source of truth to ensure the system is correctly
+    configured before use.
     """
 
     # Azure AI Search Configuration
@@ -112,7 +129,14 @@ class SearchConfig(BaseModel):
     )
 
     class Config:
+        """Pydantic model configuration.
+
+        This inner class defines metadata for the parent `SearchConfig` model.
+        Its purpose is to enforce immutability (`frozen = True`) and to allow
+        specialized types like `SecretStr` (`arbitrary_types_allowed = True`).
+        """
+
         # Enforce immutability for configuration objects
-        frozen = True
+        frozen: bool = True
         # Allow SecretStr type
-        arbitrary_types_allowed = True
+        arbitrary_types_allowed: bool = True
