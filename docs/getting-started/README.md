@@ -76,7 +76,7 @@ Get up and running in 5 minutes with Azure OpenAI!
     ```
     > **Note:** Local ChromaDB is also supported. To run without Azure, set:
     > ```bash
-    > KB_POLICY=local_only   # or: KB_POLICY=prefer_local
+    > KB_POLICY=local_only   # or: KB_POLICY=prefer_local. Note that: policy-aware backend selections are (azure_only / prefer_azure / prefer_local / local_only).
     > ```
     > and install ChromaDB:
     > ```bash
