@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Implements a knowledge base conversation flow using Azure AI Search and local ChromaDB.
 
 This module provides a production-ready KB agent implementation (ConversationFlow)
