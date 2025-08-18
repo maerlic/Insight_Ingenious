@@ -14,7 +14,7 @@ toc_icon: "rocket"
 Get up and running in 5 minutes with Azure OpenAI!
 
 ### Prerequisites
-- Python 3.13 or higher (required - earlier versions are not supported)
+- Python 3.13 or higher (required — earlier versions are not supported)
 - Azure OpenAI API credentials
 - [uv package manager](https://docs.astral.sh/uv/)
 
@@ -31,7 +31,7 @@ Get up and running in 5 minutes with Azure OpenAI!
     # Choose installation based on features needed
     uv add "ingenious[azure-full]" # Recommended: Full Azure integration (core, auth, azure, ai, database, ui)
     # OR
-    uv add "ingenious[standard]" # for local testing: includes SQL agent support (core, auth, ai, database)
+    uv add "ingenious[standard]"   # For local testing: includes SQL agent support (core, auth, ai, database)
 
     # Initialize project in the current directory
     uv run ingen init
@@ -66,6 +66,24 @@ Get up and running in 5 minutes with Azure OpenAI!
     # INGENIOUS_WEB_CONFIGURATION__ENABLE_AUTHENTICATION=false  # To disable auth
     ```
 
+    **Knowledge Base (Azure AI Search – default backend for knowledge-base-agent)**
+    _If you will use the knowledge-base-agent with its default Azure backend, add:_
+    ```bash
+    # Azure AI Search service configuration
+    INGENIOUS_AZURE_SEARCH_SERVICES__0__ENDPOINT=https://<your-service>.search.windows.net
+    INGENIOUS_AZURE_SEARCH_SERVICES__0__KEY=<your-azure-search-admin-or-query-key>
+    INGENIOUS_AZURE_SEARCH_SERVICES__0__INDEX_NAME=<your-index-name>
+    ```
+    > **Note:** Local ChromaDB is also supported. To run without Azure, set:
+    > ```bash
+    > KB_POLICY=local_only   # or: KB_POLICY=prefer_local
+    > ```
+    > and install ChromaDB:
+    > ```bash
+    > uv add chromadb
+    > ```
+    > Ensure your local knowledge base directory contains documents before querying.
+
 3. **Validate Configuration**:
     ```bash
     uv run ingen validate  # Check configuration before starting
@@ -95,8 +113,8 @@ Get up and running in 5 minutes with Azure OpenAI!
     # Additional options:
     # --host 0.0.0.0         # Bind host (default: 0.0.0.0)
     # --port                 # Port to bind (default: 80 or $WEB_PORT env var)
-    # --config config.yml    # Legacy config file (deprecated - use environment variables)
-    # --profile production   # Legacy profile (deprecated - use environment variables)
+    # --config config.yml    # Legacy config file (deprecated — use environment variables)
+    # --profile production   # Legacy profile (deprecated — use environment variables)
     ```
 
 5. **Verify Health**:
@@ -111,65 +129,76 @@ Get up and running in 5 minutes with Azure OpenAI!
     ```bash
     # Create test files for each workflow
     echo '{"user_prompt": "Analyze this customer feedback: Great product", "conversation_flow": "classification-agent"}' > test_classification.json
+
+    # Knowledge base (minimal example — no kb_top_k)
     echo '{"user_prompt": "Search for documentation about setup", "conversation_flow": "knowledge-base-agent"}' > test_knowledge.json
+
+    # Knowledge base (advanced example — control returned snippets)
+    echo '{"user_prompt": "Search for documentation about setup", "conversation_flow": "knowledge-base-agent", "kb_top_k": 3}' > test_knowledge_topk.json
+
     echo '{"user_prompt": "Show me all tables in the database", "conversation_flow": "sql-manipulation-agent"}' > test_sql.json
 
     # Test each workflow
     curl -X POST http://localhost:8000/api/v1/chat -H "Content-Type: application/json" -d @test_classification.json
     curl -X POST http://localhost:8000/api/v1/chat -H "Content-Type: application/json" -d @test_knowledge.json
+    # Optional: test the advanced kb example
+    curl -X POST http://localhost:8000/api/v1/chat -H "Content-Type: application/json" -d @test_knowledge_topk.json
     curl -X POST http://localhost:8000/api/v1/chat -H "Content-Type: application/json" -d @test_sql.json
     ```
 
 **Expected Responses**:
 - **Successful classification-agent response**: JSON with message analysis and categories
-- **Successful knowledge-base-agent response**: JSON with relevant information retrieved (may indicate empty knowledge base initially)
+- **Successful knowledge-base-agent response**: JSON with relevant information retrieved from **Azure AI Search** (or a clear message if your index is empty/misconfigured). When configured for **local ChromaDB** (see note above), results will be returned from the local store.
 - **Successful sql-manipulation-agent response**: JSON with query results or confirmation
 
 **If you see error responses**, check the troubleshooting section above or the detailed [troubleshooting guide](docs/getting-started/troubleshooting.md).
 
 That's it! You should see a JSON response with AI analysis of the input.
 
-**Next Steps - Test Additional Workflows**:
+**Next Steps — Test Additional Workflows**:
 
 7. **Test bike-insights Workflow (Requires `ingen init` first)**:
 
-    The `bike-insights` workflow is part of the project template and must be initialized first:
+    The `bike-insights` workflow is part of the project template and must be initialized first.
+
+    **Recommended (heredoc; most robust and readable):**
     ```bash
-    # First initialize project to get bike-insights workflow
-    uv run ingen init
-
-    # Create bike-insights test data file
-    # IMPORTANT: bike-insights requires JSON data in the user_prompt field (double-encoded JSON)
-    # Method 1: Use printf for precise formatting (recommended)
-    printf '%s\n' '{
-      "user_prompt": "{\"revision_id\": \"test-v1\", \"identifier\": \"test-001\", \"stores\": [{\"name\": \"Test Store\", \"location\": \"NSW\", \"bike_sales\": [{\"product_code\": \"MB-TREK-2021-XC\", \"quantity_sold\": 2, \"sale_date\": \"2023-04-01\", \"year\": 2023, \"month\": \"April\", \"customer_review\": {\"rating\": 4.5, \"comment\": \"Great bike\"}}], \"bike_stock\": []}]}",
-      "conversation_flow": "bike-insights"
-    }' > test_bike_insights.json
-
-    # Method 2: Alternative using echo (simpler but watch for shell differences)
-    echo '{
-      "user_prompt": "{\"revision_id\": \"test-v1\", \"identifier\": \"test-001\", \"stores\": [{\"name\": \"Test Store\", \"location\": \"NSW\", \"bike_sales\": [{\"product_code\": \"MB-TREK-2021-XC\", \"quantity_sold\": 2, \"sale_date\": \"2023-04-01\", \"year\": 2023, \"month\": \"April\", \"customer_review\": {\"rating\": 4.5, \"comment\": \"Great bike\"}}], \"bike_stock\": []}]}",
-      "conversation_flow": "bike-insights"
-    }' > test_bike_insights.json
-
-    # Method 3: If heredoc is preferred, ensure proper EOF placement
     cat > test_bike_insights.json << 'EOF'
     {
-    "user_prompt": "{\"revision_id\": \"test-v1\", \"identifier\": \"test-001\", \"stores\": [{\"name\": \"Test Store\", \"location\": \"NSW\", \"bike_sales\": [{\"product_code\": \"MB-TREK-2021-XC\", \"quantity_sold\": 2, \"sale_date\": \"2023-04-01\", \"year\": 2023, \"month\": \"April\", \"customer_review\": {\"rating\": 4.5, \"comment\": \"Great bike\"}}], \"bike_stock\": []}]}",
-    "conversation_flow": "bike-insights"
+      "user_prompt": "{"revision_id": "test-v1", "identifier": "test-001", "stores": [{"name": "Test Store", "location": "NSW", "bike_sales": [{"product_code": "MB-TREK-2021-XC", "quantity_sold": 2, "sale_date": "2023-04-01", "year": 2023, "month": "April", "customer_review": {"rating": 4.5, "comment": "Great bike"}}], "bike_stock": []}]}",
+      "conversation_flow": "bike-insights"
     }
     EOF
+    ```
 
-    # Test bike-insights workflow
+    **One-liner alternatives (choose one):**
+    - **printf (portable):**
+      ```bash
+      printf '%s
+' '{
+        "user_prompt": "{"revision_id": "test-v1", "identifier": "test-001", "stores": [{"name": "Test Store", "location": "NSW", "bike_sales": [{"product_code": "MB-TREK-2021-XC", "quantity_sold": 2, "sale_date": "2023-04-01", "year": 2023, "month": "April", "customer_review": {"rating": 4.5, "comment": "Great bike"}}], "bike_stock": []}]}",
+        "conversation_flow": "bike-insights"
+      }' > test_bike_insights.json
+      ```
+    - **echo (works in most shells; avoid `echo -e` as it may interpret backslashes):**
+      ```bash
+      echo '{
+        "user_prompt": "{"revision_id": "test-v1", "identifier": "test-001", "stores": [{"name": "Test Store", "location": "NSW", "bike_sales": [{"product_code": "MB-TREK-2021-XC", "quantity_sold": 2, "sale_date": "2023-04-01", "year": 2023, "month": "April", "customer_review": {"rating": 4.5, "comment": "Great bike"}}], "bike_stock": []}]}",
+        "conversation_flow": "bike-insights"
+      }' > test_bike_insights.json
+      ```
+
+    **Run the workflow:**
+    ```bash
     curl -X POST http://localhost:8000/api/v1/chat -H "Content-Type: application/json" -d @test_bike_insights.json
     ```
 
     **Expected bike-insights response**: JSON with comprehensive bike sales analysis from multiple agents (fiscal analysis, customer sentiment, summary, and bike lookup).
 
 **Important Notes**:
-- **Core Library Workflows** (`classification-agent`, `knowledge-base-agent`, `sql-manipulation-agent`) are always available and accept simple text prompts
-- **Template Workflows** like `bike-insights` require JSON-formatted data with specific fields and are only available after running `ingen init`
-- The `bike-insights` workflow is the recommended "Hello World" example for new users
+- **Core Library Workflows** (`classification-agent`, `knowledge-base-agent`, `sql-manipulation-agent`) are always available and accept simple text prompts.
+- **Template Workflows** like `bike-insights` require JSON-formatted data with specific fields and are only available after running `ingen init`.
+- The `bike-insights` workflow is the recommended **"Hello World"** example for new users.
 
 ## Workflow Categories
 
@@ -178,16 +207,16 @@ Insight Ingenious provides multiple conversation workflows with different config
 ### Core Library Workflows (Always Available)
 These workflows are built into the Ingenious library and available immediately:
 
-- `classification-agent` - Simple text classification and routing to categories (minimal config required)
-- `knowledge-base-agent` - Search and retrieve information from knowledge bases (requires Azure Search or uses local ChromaDB by default)
-- `sql-manipulation-agent` - Execute SQL queries based on natural language (requires Azure SQL or uses local SQLite by default)
+- `classification-agent` — Simple text classification and routing to categories (minimal config required)
+- `knowledge-base-agent` — Search and retrieve information from knowledge bases (**defaults to Azure AI Search**). Local ChromaDB is supported when configured (e.g., set `KB_POLICY=local_only` or `KB_POLICY=prefer_local` and `uv add chromadb`).
+- `sql-manipulation-agent` — Execute SQL queries based on natural language (requires Azure SQL or uses local SQLite by default)
 
 > **Note**: Core workflows support both hyphenated (`classification-agent`) and underscored (`classification_agent`) naming formats for backward compatibility.
 
 ### Template Workflows (Created by `ingen init`)
 These workflows are provided as examples in the project template when you run `ingen init`:
 
-- `bike-insights` - Comprehensive bike sales analysis showcasing multi-agent coordination (**ONLY available after `ingen init`** - not included in the core library)
+- `bike-insights` — Comprehensive bike sales analysis showcasing multi-agent coordination (**ONLY available after `ingen init`** — not included in the core library)
 
 > **Important**: The `bike-insights` workflow is NOT part of the core library. It's a template example that's created when you initialize a new project with `ingen init`. This is the recommended "Hello World" example for learning how to build custom workflows.
 
