@@ -25,6 +25,7 @@ Azure services and local file storage for ChromaDB persistence.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -131,6 +132,54 @@ class ConversationFlow(IConversationFlow):
             cast(str, memory_root),
             "chroma_db",  # Invariant: default or _memory_path is str.
         )
+
+    def _as_text(self, x: Any) -> str:
+        """Safely coerce any object (list/dict/bytes/etc.) to text.
+
+        This method provides a robust fallback for converting arbitrary data to a
+        string. It handles None, bytes, and attempts to serialize other types as
+        JSON before resorting to the standard `str()` representation, preventing
+        conversion errors from propagating.
+
+        Args:
+            x: The object to convert.
+
+        Returns:
+            A string representation of the input.
+        """
+        if x is None:
+            return ""
+        if isinstance(x, str):
+            return x
+        if isinstance(x, bytes):
+            try:
+                return x.decode("utf-8", "replace")
+            except Exception:
+                return str(x)
+        try:
+            return json.dumps(x, ensure_ascii=False)
+        except Exception:
+            return str(x)
+
+    def _to_text(self, x: Any) -> str:
+        """Prefer joining lists of strings; otherwise fall back to JSON/str via _as_text.
+
+        This method is designed to provide a more natural string representation for
+        lists by joining their elements. For all non-list types, it delegates the
+        conversion to the `_as_text` method for safe, generic handling.
+
+        Args:
+            x: The object to convert.
+
+        Returns:
+            A string representation of the input, with special handling for lists.
+        """
+        if isinstance(x, list):
+            parts: list[str] = []
+            for p in x:
+                parts.append(p if isinstance(p, str) else self._as_text(p))
+            return "".join(parts)
+        return self._as_text(x)
 
     # -----------------------------
     # Diagnostics toggle
@@ -340,12 +389,10 @@ class ConversationFlow(IConversationFlow):
                 )
 
                 assistant_text = (
-                    response.chat_message.content
+                    self._to_text(response.chat_message.content)
                     if getattr(response, "chat_message", None)
                     else "No response generated"
                 )
-                # Invariant: autogen ensures content is str if chat_message exists, or we use the fallback str.
-                assistant_text = cast(str, assistant_text)
 
                 # In assist mode we return the assistant's content verbatim.
                 final_message = assistant_text
@@ -438,7 +485,7 @@ class ConversationFlow(IConversationFlow):
                 system_message=system_message,
                 model_client=model_client,
                 tools=[search_function_tool],
-                reflect_on_tool_use=True,
+                reflect_on_tool_use=False,  # suppress 'thinking about tools'
             )
 
             user_msg = f"User query: {chat_request.user_prompt}"
@@ -459,25 +506,78 @@ class ConversationFlow(IConversationFlow):
             cancellation_token = CancellationToken()
 
             try:
+
+                def _looks_like_tool_chatter(text: str) -> bool:
+                    # Heuristic for tool JSON or narration the model sometimes emits as plain text
+                    if not text:
+                        return False
+                    bad_markers = (
+                        '"tool_calls"',
+                        '"function":{"name"',
+                        '"function_call"',  # OpenAI-style
+                        "Calling tool",
+                        "Tool result",
+                        "search_tool(",  # narrated calls
+                    )
+                    return any(m in text for m in bad_markers)
+
+                def _is_tool_event(obj) -> bool:
+                    # Try class name first (e.g., ToolCall*, ToolResult*)
+                    cls = obj.__class__.__name__.lower()
+                    if any(k in cls for k in ("tool", "functioncall", "function")):
+                        return True
+
+                    # Some streaming objects have an 'event' or 'delta' shape
+                    ev = getattr(obj, "event", None)
+                    if isinstance(ev, str) and any(
+                        k in ev.lower() for k in ("tool", "function")
+                    ):
+                        return True
+
+                    # If the object exposes a dict-like view, check common keys
+                    for attr in ("tool_calls", "function_call", "tool_call_delta"):
+                        if hasattr(obj, attr):
+                            return True
+                        d = getattr(obj, "dict", None)
+                        if callable(d) and attr in (d() or {}):
+                            return True
+                    return False
+
                 # Forward messages yielded by the agent's stream.
                 stream = search_assistant.run_stream(
                     task=user_msg, cancellation_token=cancellation_token
                 )
 
                 async for message in stream:
-                    # Forward content chunks as-is.
+                    # 1) Tool events: optionally surface a status, but don't forward noisy content
+                    if _is_tool_event(message):
+                        # Optional UX: show that we’re working with tools
+                        yield ChatResponseChunk(
+                            thread_id=thread_id,
+                            message_id=message_id,
+                            chunk_type="status",
+                            content="Searching knowledge base...",  # or "Using tools…"
+                            is_final=False,
+                        )
+                        continue
+
+                    # 2) Plain text chunks
                     if hasattr(message, "content") and message.content:
-                        # Invariant: stream content chunks are strings when truthy.
-                        accumulated_content += cast(str, message.content)
+                        text = str(message.content)
+                        if _looks_like_tool_chatter(text):
+                            # Drop narrated tool JSON/spans that sneak in as text
+                            continue
+
+                        accumulated_content += text
                         yield ChatResponseChunk(
                             thread_id=thread_id,
                             message_id=message_id,
                             chunk_type="content",
-                            # Invariant: stream content chunks are strings when truthy.
-                            content=cast(str, message.content),
+                            content=text,
                             is_final=False,
                         )
-                    # Forward token usage updates as token_count chunks.
+
+                    # 3) Token usage
                     if hasattr(message, "usage"):
                         usage = message.usage
                         if hasattr(usage, "total_tokens"):
@@ -492,7 +592,7 @@ class ConversationFlow(IConversationFlow):
                             is_final=False,
                         )
 
-                    # Final flush restoration: surface terminal TaskResult content (if any).
+                    # 4) Final flush restoration: surface terminal TaskResult content (if any).
                     if hasattr(message, "__class__") and "TaskResult" in str(
                         message.__class__
                     ):
@@ -502,17 +602,16 @@ class ConversationFlow(IConversationFlow):
                                 final_msg = final_msgs[-1]
                                 final_text = getattr(final_msg, "content", None)
                                 if final_text and final_text not in accumulated_content:
-                                    # Invariant: final_text is str when truthy.
-                                    accumulated_content += final_text
-                                    yield ChatResponseChunk(
-                                        thread_id=thread_id,
-                                        message_id=message_id,
-                                        chunk_type="content",
-                                        content=final_text,
-                                        is_final=False,
-                                    )
+                                    if not _looks_like_tool_chatter(final_text):
+                                        accumulated_content += final_text
+                                        yield ChatResponseChunk(
+                                            thread_id=thread_id,
+                                            message_id=message_id,
+                                            chunk_type="content",
+                                            content=final_text,
+                                            is_final=False,
+                                        )
                         except Exception:
-                            # Avoid breaking stream on flush issues
                             pass
 
             except Exception as e:
@@ -1011,6 +1110,15 @@ class ConversationFlow(IConversationFlow):
         Policy-aware unified search that chooses Azure or Chroma as needed,
         with optional fallbacks based on KB_POLICY and KB_FALLBACK_ON_EMPTY.
         """
+        if logger:
+            logger.debug(
+                "[KB] search start policy=%s use_azure=%s top_k=%s query=%r",
+                self._kb_policy(),
+                use_azure_search,
+                top_k,
+                search_query[:200],
+            )
+
         policy = self._kb_policy()
 
         # Local-only short-circuit.

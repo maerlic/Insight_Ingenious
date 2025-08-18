@@ -126,31 +126,30 @@ def test_invalid_port_and_log_level(monkeypatch: MonkeyPatch) -> None:
 
 
 def test_empty_models_rejected(monkeypatch: MonkeyPatch) -> None:
-    """Test that configuration fails validation if no models are provided.
+    """Test that configuration fails validation if no models are provided."""
+    # Explicitly set models to an empty list to override any .env files
+    monkeypatch.setenv("INGENIOUS_MODELS", "[]")
 
-    The `models` field is non-optional and must contain at least one entry,
-    so this test verifies that a missing environment variable causes a
-    validation error as expected.
-    """
-    # No models env at all -> validator should reject
-    with pytest.raises(Exception):
+    # The validator raises a ValueError, so the test should expect that specifically
+    # FIX: Update the match string to reflect the actual error message.
+    with pytest.raises(ValueError, match="At least one model must be configured"):
         IngeniousSettings()
 
 
 def test_model_auth_validations_token_requires_api_key(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """Test that 'token' auth method requires an API key.
-
-    Verifies the custom validator that ensures if authentication_method is
-    'token', the 'api_key' field must also be provided.
-    """
+    """Test that 'token' auth method requires an API key."""
     monkeypatch.setenv("INGENIOUS_MODELS__0__MODEL", "gpt-4o")
     monkeypatch.setenv("INGENIOUS_MODELS__0__BASE_URL", "https://oai/")
     monkeypatch.setenv("INGENIOUS_MODELS__0__DEPLOYMENT", "chat")
     monkeypatch.setenv("INGENIOUS_MODELS__0__AUTHENTICATION_METHOD", "token")
-    # No API key set -> should fail
-    with pytest.raises(ValueError):
+
+    # Crucial Fix: Ensure no API key is present from any source for this test
+    monkeypatch.setenv("INGENIOUS_MODELS__0__API_KEY", "")  # Explicitly set to empty
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)  # Unset common fallbacks
+
+    with pytest.raises(ValueError, match="API key is required"):
         IngeniousSettings()
 
 
