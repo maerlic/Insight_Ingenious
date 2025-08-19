@@ -283,9 +283,16 @@ class AdvancedSearchPipeline:
                 "source_chunks": [],
             }
 
+        # Handle the 'None' case.
+        if self.answer_generator is None:
+            logger.error(
+                "Attempted to generate an answer, but the generator is not configured."
+            )
+            raise GenerationDisabledError("Answer generation is not enabled.")
+
         answer: str = ""
         try:
-            answer: str = await self.answer_generator.generate(query, top_n_chunks)
+            answer = await self.answer_generator.generate(query, top_n_chunks)
         except Exception as e:
             logger.error(f"Error during generation phase: {e}")
             raise RuntimeError("Answer Generation failed.") from e

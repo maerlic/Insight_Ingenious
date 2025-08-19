@@ -15,12 +15,20 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from typing import Any, AsyncIterator, Callable, Protocol
+
+# 1. Import TYPE_CHECKING from the typing module
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Protocol
 
 from azure.search.documents.models import QueryType
 
 from ingenious.config import IngeniousSettings
-from ingenious.services.azure_search import build_search_pipeline
+from ingenious.services.azure_search import SearchConfig, build_search_pipeline
+
+if TYPE_CHECKING:
+    from azure.search.documents.aio import SearchClient
+
+    from ingenious.services.azure_search import AdvancedSearchPipeline
+
 from ingenious.services.retrieval.errors import GenerationDisabledError
 
 from .builders import build_search_config_from_settings
@@ -70,9 +78,9 @@ class AzureSearchProvider:
     It avoids private SDK methods to ensure stability and maintainability.
     """
 
-    _cfg: Any
-    _pipeline: Any
-    _rerank_client: Any
+    _cfg: SearchConfig
+    _pipeline: "AdvancedSearchPipeline"
+    _rerank_client: "SearchClient"
 
     def __init__(
         self, settings: IngeniousSettings, enable_answer_generation: bool | None = None
