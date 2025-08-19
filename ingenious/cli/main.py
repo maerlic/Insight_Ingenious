@@ -46,7 +46,7 @@ Get help for any command with: ingen <command> --help
 )
 
 
-# ✅ NEW: ensure bare invocation / --help always exit 0 and show subcommands
+# Ensure bare invocation / --help always exit 0 and show subcommands
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context):
     if ctx.invoked_subcommand is None and (
