@@ -44,148 +44,108 @@ uv run ingen init
 
 ### 2) Configure Credentials (.env)
 
-Create a `.env` file **in the project root** and paste the **dummy template** below. Replace the placeholders with your real values.
+Create a `.env` file **in the project root** and paste the environment example below. Replace the placeholders with your real values.
 
-> **Important:** These variables reflect the current configuration loader.
-> - Azure Search is configured via **`azure_search_services`** (top‑level).
-> - Booleans should be the strings **`true`** or **`false`** (avoid `1/0`).
+> **Important:** See the environment example below.
 
-#### 📄 Minimal Local-Only (no Azure AI Search)
-If you only want to test chat with local history:
+#### 📄 Environment example (`.env`)
 ```bash
-# --- Web server ---
-INGENIOUS_WEB_CONFIGURATION__IP_ADDRESS=0.0.0.0
-INGENIOUS_WEB_CONFIGURATION__PORT=8000
+# ---------- Azure OpenAI ----------
+AZURE_OPENAI_ENDPOINT="https://your-aoai-resource.openai.azure.com/"
+AZURE_OPENAI_KEY="YOUR_AZURE_OPENAI_KEY"
+AZURE_OPENAI_API_VERSION="2024-12-01-preview"
+AZURE_OPENAI_GENERATION_DEPLOYMENT="gpt-4.1-mini"
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT="text-embedding-3-small"
 
-# --- Chat service ---
-INGENIOUS_CHAT_SERVICE__TYPE=multi_agent
+# Ingenious model slots (must be token auth)
+INGENIOUS_MODELS__0__MODEL="gpt-4.1-mini"
+INGENIOUS_MODELS__0__API_TYPE="rest"
+INGENIOUS_MODELS__0__API_VERSION="${AZURE_OPENAI_API_VERSION}"
+INGENIOUS_MODELS__0__DEPLOYMENT="${AZURE_OPENAI_GENERATION_DEPLOYMENT}"
+INGENIOUS_MODELS__0__API_KEY="${AZURE_OPENAI_KEY}"
+INGENIOUS_MODELS__0__BASE_URL="${AZURE_OPENAI_ENDPOINT}"
+INGENIOUS_MODELS__0__AUTHENTICATION_METHOD="token"
 
-# --- Models (Azure OpenAI - chat only) ---
-INGENIOUS_MODELS__0__MODEL=gpt-4.1-mini
-INGENIOUS_MODELS__0__API_TYPE=rest
-INGENIOUS_MODELS__0__API_VERSION=2024-12-01-preview
-INGENIOUS_MODELS__0__DEPLOYMENT=my-gpt-41-mini-deployment
-INGENIOUS_MODELS__0__API_KEY=aoai-key-REPLACE_ME
-INGENIOUS_MODELS__0__BASE_URL=https://my-aoai-resource.openai.azure.com/
-INGENIOUS_MODELS__0__AUTHENTICATION_METHOD=token
+INGENIOUS_MODELS__1__MODEL="text-embedding-3-small"
+INGENIOUS_MODELS__1__API_TYPE="rest"
+INGENIOUS_MODELS__1__API_VERSION="${AZURE_OPENAI_API_VERSION}"
+INGENIOUS_MODELS__1__DEPLOYMENT="${AZURE_OPENAI_EMBEDDING_DEPLOYMENT}"
+INGENIOUS_MODELS__1__API_KEY="${AZURE_OPENAI_KEY}"
+INGENIOUS_MODELS__1__BASE_URL="${AZURE_OPENAI_ENDPOINT}"
+INGENIOUS_MODELS__1__AUTHENTICATION_METHOD="token"
 
-# --- Chat history (local SQLite) ---
-INGENIOUS_CHAT_HISTORY__DATABASE_TYPE=sqlite
-INGENIOUS_CHAT_HISTORY__DATABASE_PATH=./.tmp/chat_history.db
-INGENIOUS_CHAT_HISTORY__MEMORY_PATH=./.tmp
+INGENIOUS_CHAT_HISTORY__MEMORY_PATH="./.tmp"
 
-# --- Knowledge base (local fallback only) ---
-KB_POLICY=local_only
-KB_USE_AZURE_SEARCH=false
-KB_USE_SEMANTIC_RANKING=false
+# ---------- Azure AI Search (BASE ONLY) ----------
+AZURE_SEARCH_ENDPOINT="https://your-search-service.search.windows.net"
+AZURE_SEARCH_KEY="YOUR_AZURE_SEARCH_API_KEY"
+AZURE_SEARCH_INDEX_NAME="your-index-name"
+AZURE_SEARCH_SEMANTIC_CONFIG="some-semantic-config"
+
+INGENIOUS_AZURE_SEARCH_SERVICES__0__SERVICE="default"
+INGENIOUS_AZURE_SEARCH_SERVICES__0__ENDPOINT="${AZURE_SEARCH_ENDPOINT}"
+INGENIOUS_AZURE_SEARCH_SERVICES__0__KEY="${AZURE_SEARCH_KEY}"
+INGENIOUS_AZURE_SEARCH_SERVICES__0__INDEX_NAME="${AZURE_SEARCH_INDEX_NAME}"
+
+# (optional tuning; keep if you use semantic)
+INGENIOUS_AZURE_SEARCH_SERVICES__0__USE_SEMANTIC_RANKING="1"
+INGENIOUS_AZURE_SEARCH_SERVICES__0__SEMANTIC_CONFIGURATION_NAME="your-semantic-config"
+INGENIOUS_AZURE_SEARCH_SERVICES__0__ID_FIELD="id"
+INGENIOUS_AZURE_SEARCH_SERVICES__0__CONTENT_FIELD="content"
+INGENIOUS_AZURE_SEARCH_SERVICES__0__VECTOR_FIELD="vector"
+INGENIOUS_AZURE_SEARCH_SERVICES__0__TOP_K_RETRIEVAL="5"
+INGENIOUS_AZURE_SEARCH_SERVICES__0__TOP_N_FINAL="10"
+
+# (optional; harmless if present)
+INGENIOUS_SEARCH__PROVIDER="azure"
+INGENIOUS_SEARCH__POLICY="azure_only"
+
+# ---------- KB tuning ----------
+KB_MODE="direct"
+KB_TOP_K="5"
+KB_USE_SEMANTIC_RANKING="1"
+KB_POLICY="azure_only"
+KB_WRITE_CONFIG_SNAPSHOT="1"
+
+# ---------- Chat history (Azure SQL) ----------
+# Keep on ONE line; quoting protects special chars
+AZURE_SQL_CONNECTION_STRING="Driver={ODBC Driver 18 for SQL Server};Server=tcp:yourserver.database.windows.net,1433;Database=yourdatabase;Uid=your-username;Pwd=YOUR_STRONG_PASSWORD;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
+INGENIOUS_CHAT_HISTORY__DATABASE_TYPE="azuresql"
+INGENIOUS_CHAT_HISTORY__DATABASE_NAME="yourdatabase"
+INGENIOUS_CHAT_HISTORY__DATABASE_CONNECTION_STRING="${AZURE_SQL_CONNECTION_STRING}"
+
+# ---------- Azure Blob ----------
+AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=yourstorageaccount;AccountKey=YOUR_STORAGE_ACCOUNT_KEY;EndpointSuffix=core.windows.net"
+
+AZURE_STORAGE_REVISIONS_URL="https://yourstorageaccount.blob.core.windows.net/prompts/"
+INGENIOUS_FILE_STORAGE__REVISIONS__ENABLE="true"
+INGENIOUS_FILE_STORAGE__REVISIONS__STORAGE_TYPE="azure"
+INGENIOUS_FILE_STORAGE__REVISIONS__CONTAINER_NAME="prompts"
+INGENIOUS_FILE_STORAGE__REVISIONS__PATH="ingenious-files"
+INGENIOUS_FILE_STORAGE__REVISIONS__ADD_SUB_FOLDERS="true"
+INGENIOUS_FILE_STORAGE__REVISIONS__URL="${AZURE_STORAGE_REVISIONS_URL}"
+INGENIOUS_FILE_STORAGE__REVISIONS__TOKEN="${AZURE_STORAGE_CONNECTION_STRING}"
+INGENIOUS_FILE_STORAGE__REVISIONS__AUTHENTICATION_METHOD="token"
+
+AZURE_STORAGE_DATA_URL="https://yourstorageaccount.blob.core.windows.net/data/"
+INGENIOUS_FILE_STORAGE__DATA__ENABLE="true"
+INGENIOUS_FILE_STORAGE__DATA__STORAGE_TYPE="azure"
+INGENIOUS_FILE_STORAGE__DATA__CONTAINER_NAME="data"
+INGENIOUS_FILE_STORAGE__DATA__PATH="ingenious-files"
+INGENIOUS_FILE_STORAGE__DATA__ADD_SUB_FOLDERS="true"
+INGENIOUS_FILE_STORAGE__DATA__URL="${AZURE_STORAGE_DATA_URL}"
+INGENIOUS_FILE_STORAGE__DATA__TOKEN="${AZURE_STORAGE_CONNECTION_STRING}"
+INGENIOUS_FILE_STORAGE__DATA__AUTHENTICATION_METHOD="token"
+
+# ---------- Web ----------
+INGENIOUS_WEB_CONFIGURATION__IP_ADDRESS="0.0.0.0"
+INGENIOUS_WEB_CONFIGURATION__PORT="8080"
+
+# ---------- Debug (optional) ----------
+DEBUG_AZURE_CONFIG="1"
 ```
 
-#### ☁️ Full Cloud (Azure OpenAI + Azure AI Search + optional Azure SQL/Storage)
-Use this when you want the **knowledge-base-agent** backed by **Azure AI Search**.
-
-```bash
-# =========================
-# Web server
-# =========================
-INGENIOUS_WEB_CONFIGURATION__IP_ADDRESS=0.0.0.0
-INGENIOUS_WEB_CONFIGURATION__PORT=8000
-
-# =========================
-# Chat service
-# =========================
-INGENIOUS_CHAT_SERVICE__TYPE=multi_agent
-
-# =========================
-# Azure OpenAI (chat & embeddings)
-# =========================
-# Chat (slot 0)
-INGENIOUS_MODELS__0__MODEL=gpt-4.1-mini
-INGENIOUS_MODELS__0__API_TYPE=rest
-INGENIOUS_MODELS__0__API_VERSION=2024-12-01-preview
-INGENIOUS_MODELS__0__DEPLOYMENT=my-gpt-41-mini-deployment
-INGENIOUS_MODELS__0__API_KEY=aoai-key-REPLACE_ME
-INGENIOUS_MODELS__0__BASE_URL=https://my-aoai-resource.openai.azure.com/
-INGENIOUS_MODELS__0__AUTHENTICATION_METHOD=token
-
-# Embeddings (slot 1)
-# text-embedding-3-small → 1536 dims (text-embedding-3-large → 3072)
-INGENIOUS_MODELS__1__MODEL=text-embedding-3-small
-INGENIOUS_MODELS__1__API_TYPE=rest
-INGENIOUS_MODELS__1__API_VERSION=2024-12-01-preview
-INGENIOUS_MODELS__1__DEPLOYMENT=my-embedding-deployment
-INGENIOUS_MODELS__1__API_KEY=aoai-key-REPLACE_ME
-INGENIOUS_MODELS__1__BASE_URL=https://my-aoai-resource.openai.azure.com/
-INGENIOUS_MODELS__1__AUTHENTICATION_METHOD=token
-
-# =========================
-# Knowledge Base (Azure AI Search)
-# =========================
-# Top-level Azure Search service (index 0). Add more services with __1__, __2__, ...
-INGENIOUS_AZURE_SEARCH_SERVICES__0__ENDPOINT=https://my-search-service.search.windows.net
-INGENIOUS_AZURE_SEARCH_SERVICES__0__KEY=azure-search-key-REPLACE_ME
-INGENIOUS_AZURE_SEARCH_SERVICES__0__INDEX_NAME=my-kb-index
-
-# Optional but recommended for best results with semantic ranking:
-INGENIOUS_AZURE_SEARCH_SERVICES__0__USE_SEMANTIC_RANKING=true
-INGENIOUS_AZURE_SEARCH_SERVICES__0__SEMANTIC_CONFIGURATION_NAME=my-semantic-config
-
-# Index schema mapping (adjust to your index)
-INGENIOUS_AZURE_SEARCH_SERVICES__0__ID_FIELD=id
-INGENIOUS_AZURE_SEARCH_SERVICES__0__CONTENT_FIELD=content
-INGENIOUS_AZURE_SEARCH_SERVICES__0__VECTOR_FIELD=vector
-INGENIOUS_AZURE_SEARCH_SERVICES__0__TOP_K_RETRIEVAL=5
-INGENIOUS_AZURE_SEARCH_SERVICES__0__TOP_N_FINAL=10
-
-# Knowledge base toggles & policy
-KB_USE_AZURE_SEARCH=true          # REQUIRED for Azure-backed KB
-KB_USE_SEMANTIC_RANKING=true      # set false if your index lacks semantic config
-KB_POLICY=azure_only              # alternatives: prefer_azure | prefer_local | local_only
-KB_MODE=direct                    # default mode for KB agent
-KB_TOP_K=5
-KB_WRITE_CONFIG_SNAPSHOT=true     # optional: writes a snapshot of resolved config for debugging
-
-# =========================
-# Chat history (choose ONE)
-# =========================
-# A) Local SQLite (simple)
-INGENIOUS_CHAT_HISTORY__DATABASE_TYPE=sqlite
-INGENIOUS_CHAT_HISTORY__DATABASE_PATH=./.tmp/chat_history.db
-INGENIOUS_CHAT_HISTORY__MEMORY_PATH=./.tmp
-
-# B) Azure SQL (production)
-#INGENIOUS_CHAT_HISTORY__DATABASE_TYPE=azuresql
-#INGENIOUS_CHAT_HISTORY__DATABASE_NAME=my-chat-db
-#INGENIOUS_CHAT_HISTORY__DATABASE_CONNECTION_STRING=Driver={ODBC Driver 18 for SQL Server};Server=tcp:my-server.database.windows.net,1433;Database=my-chat-db;Uid=my-user;Pwd=my-strong-password;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;
-
-# =========================
-# File storage (optional; for revisions/data over Azure Blob)
-# =========================
-# Global connection string to your storage account
-# Note: you can also use SAS tokens instead of the full connection string.
-AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=myaccount;AccountKey=REPLACE_ME;EndpointSuffix=core.windows.net
-
-# Revisions (e.g., prompt revisions)
-INGENIOUS_FILE_STORAGE__REVISIONS__ENABLE=true
-INGENIOUS_FILE_STORAGE__REVISIONS__STORAGE_TYPE=azure
-INGENIOUS_FILE_STORAGE__REVISIONS__CONTAINER_NAME=prompts
-INGENIOUS_FILE_STORAGE__REVISIONS__PATH=ingenious-files
-INGENIOUS_FILE_STORAGE__REVISIONS__ADD_SUB_FOLDERS=true
-INGENIOUS_FILE_STORAGE__REVISIONS__URL=https://myaccount.blob.core.windows.net/prompts/
-INGENIOUS_FILE_STORAGE__REVISIONS__TOKEN=${AZURE_STORAGE_CONNECTION_STRING}
-INGENIOUS_FILE_STORAGE__REVISIONS__AUTHENTICATION_METHOD=token
-
-# Data (e.g., uploaded datasets)
-INGENIOUS_FILE_STORAGE__DATA__ENABLE=true
-INGENIOUS_FILE_STORAGE__DATA__STORAGE_TYPE=azure
-INGENIOUS_FILE_STORAGE__DATA__CONTAINER_NAME=data
-INGENIOUS_FILE_STORAGE__DATA__PATH=ingenious-files
-INGENIOUS_FILE_STORAGE__DATA__ADD_SUB_FOLDERS=true
-INGENIOUS_FILE_STORAGE__DATA__URL=https://myaccount.blob.core.windows.net/data/
-INGENIOUS_FILE_STORAGE__DATA__TOKEN=${AZURE_STORAGE_CONNECTION_STRING}
-INGENIOUS_FILE_STORAGE__DATA__AUTHENTICATION_METHOD=token
-```
-
-> **Tip:** Do not quote the values with `"..."` in `.env` unless the value itself contains spaces or special characters that require quoting.
+> **Tip:** Replace the placeholder values (e.g., `YOUR_AZURE_OPENAI_KEY`) with your own. The example uses quotes for safety; quoting is optional unless your value contains spaces or special characters.
 
 ---
 
@@ -195,12 +155,8 @@ uv run ingen validate  # Check configuration before starting
 ```
 
 **If validation fails with port conflicts:**
+Change `INGENIOUS_WEB_CONFIGURATION__PORT` in your `.env` (see the environment example above), then re-run:
 ```bash
-# Try a different port
-INGENIOUS_WEB_CONFIGURATION__PORT=8001 uv run ingen validate
-
-# Or make it permanent in .env
-echo "INGENIOUS_WEB_CONFIGURATION__PORT=8001" >> .env
 uv run ingen validate
 ```
 
@@ -287,7 +243,7 @@ curl -sS -X POST http://localhost:8000/api/v1/chat -H "Content-Type: application
 
 **Common KB Misconfigurations**:
 - `PreflightError: [azure_search] policy: Azure Search is required…`
-  → Ensure `KB_USE_AZURE_SEARCH=true` **and** the `INGENIOUS_AZURE_SEARCH_SERVICES__0__...` block is present.
+  → Ensure Azure Search is configured as in the environment example above and the `INGENIOUS_AZURE_SEARCH_SERVICES__0__...` block is present.
 - 404/401/403 from Azure Search GET calls
   → Check `INDEX_NAME`, `ENDPOINT`, and `KEY`.
 
